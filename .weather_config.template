@@ -1,0 +1,57 @@
+# Weather Configuration File
+# Copy this to .weather_config and update with your credentials
+
+# OpenWeatherMap API key (Get yours at https://openweathermap.org/api)
+API_KEY="00000000000000000000000000000000"
+API_KEY_TYPE="FREE"
+
+# Moon Phase API key (Get yours at https://astroapi.byhrast.com)
+MOON_API_KEY="0000000000000000000000000000000000000000000000000000000000000000"
+
+# Location (latitude and longitude)
+# Example locations:
+#   DHAKA:               lat=23.7626&lon=90.3786
+#   Washington, D.C.:    lat=38.8977&lon=-77.0365
+#   New York:            lat=40.7579&lon=-73.9855
+LOCATION="lat=23.7626&lon=90.3786"  # DHAKA
+
+# Timezone
+TIMEZONE="Asia/Dhaka"
+
+# ─── Retry Configuration ──────────────────────────────────────────────────────
+# Maximum number of connectivity check attempts
+readonly MAX_CONNECTIVITY_RETRIES=5
+# Seconds to wait between connectivity check attempts
+readonly CONNECTIVITY_RETRY_DELAY=5
+
+# ─── Display Thresholds ───────────────────────────────────────────────────────
+# Minutes before sunrise to show warning
+readonly SUNRISE_WARNING_THRESHOLD=30
+# Minutes before sunset to show warning
+readonly SUNSET_WARNING_THRESHOLD=30
+# Degrees Celsius difference to show feels-like
+readonly FEELS_LIKE_THRESHOLD=10
+# Probability threshold for rain warning (0.7 = 70%)
+readonly RAIN_FORECAST_THRESHOLD=0.7
+# Hours to look ahead for rain forecast
+readonly RAIN_FORECAST_WINDOW=1
+
+# ─── Moon Phase Display Configuration ────────────────────────────────────────
+# Master toggle — show moon phase at all
+readonly MOON_PHASE_ENABLED=true
+# Window start: numeric (minutes after anchor) or "moonrise"
+#   - Numeric:  Minutes after sunset (or moonrise if after sunset)
+#   - "moonrise": Show from moonrise onwards
+readonly MOON_PHASE_WINDOW_START=1
+# Window end: numeric (minutes after start) or "moonset"
+#   - Numeric:  Minutes after MOON_PHASE_WINDOW_START
+#   - "moonset": Show until moonset
+readonly MOON_PHASE_WINDOW_DURATION=60
+# true → show even when currently raining; false → suppress during active rain
+readonly MOON_PHASE_SHOW_DURING_RAIN=true
+# true → show even when rain is forecasted; false → suppress during forecast rain
+readonly MOON_PHASE_SHOW_WITH_RAIN_FORECAST=false
+# true → phase name in Bengali
+readonly SHOW_MOONPHASE_BENGALI=false
+# true → show English and Bengali (overrides SHOW_MOONPHASE_BENGALI)
+readonly SHOW_MOONPHASE_BILINGUAL=false
