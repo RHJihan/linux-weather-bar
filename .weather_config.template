@@ -58,7 +58,9 @@ readonly SHOW_MOONPHASE_BILINGUAL=false
 # ── Moonrise & Moonset Announcement ─────────────────────────────────────────────────────
 # Master toggle for moonrise & moonset (works independently of MOON_PHASE_ENABLED)
 readonly SHOW_MOONRISE_MOONSET=true
-# Minutes before moonrise to show warning
-readonly MOONRISE_WARNING_THRESHOLD=30
+# Controls moonrise display:
+# - "sunset": show moonrise immediately after sunset if it occurs after sunset (skip if before)
+# - Integer (e.g., 30): show moonrise when within that many minutes (current behavior)
+readonly MOONRISE_WARNING_THRESHOLD="sunset"
 # Minutes before moonset to show warning
 readonly MOONSET_WARNING_THRESHOLD=30
