@@ -10,6 +10,7 @@ A lightweight, feature-rich Bash script that displays **live weather, rain forec
 - **Sunrise & sunset warnings** — alerts when sunrise/sunset is approaching
 - **Rain forecast** — upcoming rain with time and probability from OWM forecast API
 - **Moon phase display** — shows current moon phase with emoji, only during the actual lunar visibility window (sunset → moonrise → moonset → sunrise)
+- **Moonrise & moonset announcements** — warns when moonrise or moonset is approaching, mirrors the sunrise/sunset warning pattern
 - **Smart solar/lunar window engine** — calculates the intersection of the solar and lunar windows using Unix epoch math; handles midnight crossing correctly
 - **Bilingual support** — moon phase names in English, Bengali, or both
 - **Aggressive caching** — sun and moon data cached to JSON; API is called only when necessary
@@ -26,6 +27,8 @@ A lightweight, feature-rich Bash script that displays **live weather, rain forec
 🌫️   Haze   28°C    🌕  পূর্ণিমা
 ☁️   Scattered Clouds   28°C    🌖  Waning Gibbous
 🌦️   Light Rain   26°C
+☀️   Clear Sky   32°C    Moonset: 8:24 AM
+🌕   Full Moon   28°C    Moonrise: 7:45 PM
 ```
 
 ---
@@ -88,6 +91,9 @@ TIMEZONE="Asia/Dhaka"                     # your timezone
 FEELS_LIKE_THRESHOLD=3                    # show feels-like if diff exceeds this (°C)
 SUNRISE_WARNING_THRESHOLD=30              # warn N minutes before sunrise
 SUNSET_WARNING_THRESHOLD=30               # warn N minutes before sunset
+SHOW_MOONRISE_MOONSET=true                # master toggle for moonrise/moonset announcements
+MOONRISE_WARNING_THRESHOLD=30             # warn N minutes before moonrise
+MOONSET_WARNING_THRESHOLD=30              # warn N minutes before moonset
 ```
 
 ### Rain Forecast
@@ -133,6 +139,10 @@ The moon phase is shown **only during the intersection window** of:
 
 - **Solar window:** Sunset (day N) → Sunrise (day N+1)
 - **Lunar window:** Moonrise → Moonset
+
+### Moonrise & Moonset Announcements
+
+Independently of moon phase display, the script warns when moonrise or moonset is approaching (within `MOONRISE_WARNING_THRESHOLD` / `MOONSET_WARNING_THRESHOLD` minutes). Moonset is shown even after sunrise if the moon hasn't set yet. Controlled by the `SHOW_MOONRISE_MOONSET` master toggle.
 
 All time comparisons use Unix epoch to handle midnight crossing correctly.
 
