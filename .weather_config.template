@@ -10,10 +10,9 @@ MOON_API_KEY="0000000000000000000000000000000000000000000000000000000000000000"
 
 # Location (latitude and longitude)
 # Example locations:
-#   DHAKA:               lat=23.7626&lon=90.3786
-#   Washington, D.C.:    lat=38.8977&lon=-77.0365
-#   New York:            lat=40.7579&lon=-73.9855
-LOCATION="lat=23.7626&lon=90.3786"  # DHAKA
+#   DHAKA:      lat=23.7798&lon=90.4233
+#   RANGPUR:    lat=25.7388&lon=89.2519
+LOCATION="lat=23.7798&lon=90.4233"  # DHAKA
 
 # Timezone
 TIMEZONE="Asia/Dhaka"
@@ -55,3 +54,11 @@ readonly MOON_PHASE_SHOW_WITH_RAIN_FORECAST=false
 readonly SHOW_MOONPHASE_BENGALI=false
 # true → show English and Bengali (overrides SHOW_MOONPHASE_BENGALI)
 readonly SHOW_MOONPHASE_BILINGUAL=false
+
+# ── Moonrise & Moonset Announcement ─────────────────────────────────────────────────────
+# Master toggle for moonrise & moonset (works independently of MOON_PHASE_ENABLED)
+readonly SHOW_MOONRISE_MOONSET=true
+# Minutes before moonrise to show warning
+readonly MOONRISE_WARNING_THRESHOLD=30
+# Minutes before moonset to show warning
+readonly MOONSET_WARNING_THRESHOLD=30
