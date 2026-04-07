@@ -64,3 +64,7 @@ readonly SHOW_MOONRISE_MOONSET=true
 readonly MOONRISE_WARNING_THRESHOLD="sunset"
 # Minutes before moonset to show warning
 readonly MOONSET_WARNING_THRESHOLD=30
+# true → show even when currently raining; false → suppress during active rain
+readonly SHOW_MOONRISE_MOONSET_DURING_RAIN=false
+# true → show even when rain is forecasted; false → suppress during forecast rain
+readonly SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST=false
