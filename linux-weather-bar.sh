@@ -62,10 +62,13 @@ load_or_create_config
 : "${MOON_PHASE_ENABLED:=false}"
 : "${MOON_PHASE_WINDOW_START:=1}"
 : "${MOON_PHASE_WINDOW_DURATION:=60}"
-: "${MOON_PHASE_SHOW_DURING_RAIN:=false}"
+: "${MOON_PHASE_SHOW_DURING_RAIN:=true}"
 : "${MOON_PHASE_SHOW_WITH_RAIN_FORECAST:=false}"
 : "${SHOW_MOONPHASE_BENGALI:=false}"
 : "${SHOW_MOONPHASE_BILINGUAL:=false}"
+: "${SHOW_MOONRISE_MOONSET:=false}"
+: "${MOONRISE_WARNING_THRESHOLD:=20}"
+: "${MOONSET_WARNING_THRESHOLD:=30}"
 
 # ─── Validate Required Credentials ────────────────────────────────────────────
 if [[ -z "${MOON_API_KEY:-}" ]] && [[ "${MOON_PHASE_ENABLED}" == "true" ]]; then
@@ -1040,6 +1043,42 @@ build_weather_line() {
 	# Rain warning
 	if [[ -n "$rain_warning" ]]; then
     	line+="    ${rain_warning}"
+	fi
+
+	# Hoisted parsing, shared by moonrise + moonset warning
+	local _moonrise_epoch=0 _moonset_epoch=0
+	if [[ -n "$moon_data" ]]; then
+		IFS=$'\t' read -r _moonrise_epoch _moonset_epoch \
+			<<<"$(parse_moon_times "$moon_data" "$effective_sunrise_epoch")"
+	fi
+
+	# Master toggle for all moon events
+	if [[ "$SHOW_MOONRISE_MOONSET" == "true" ]]; then
+
+		# Moonrise announcement
+		if (( _moonrise_epoch > 0 )); then
+			local mins_to_moonrise
+			mins_to_moonrise=$(minutes_until_event "$_moonrise_epoch")
+			if (( mins_to_moonrise > 0 && mins_to_moonrise <= MOONRISE_WARNING_THRESHOLD )); then
+				local moonrise_time
+				moonrise_time=$(format_time "$_moonrise_epoch")
+				line+="    Moonrise: ${moonrise_time^^}"
+			fi
+		fi
+
+		# Moonset announcement — only before sunrise (overnight/nighttime context)
+		local now
+		now=$(date +%s)
+		if (( _moonset_epoch > 0 && now < effective_sunrise_epoch )); then
+			local mins_to_moonset
+			mins_to_moonset=$(minutes_until_event "$_moonset_epoch")
+			if (( mins_to_moonset > 0 && mins_to_moonset <= MOONSET_WARNING_THRESHOLD )); then
+				local moonset_time
+				moonset_time=$(format_time "$_moonset_epoch")
+				line+="    Moonset: ${moonset_time^^}"
+			fi
+		fi
+
 	fi
 
 	# Moon phase
