@@ -580,12 +580,30 @@ get_moon_data() {
 	fi
 
 	if [[ -n "$fresh_data" ]]; then
-		# Write cache if fetched date matches needed date (safe day or night)
-		local fetched_date
-		fetched_date=$(jq -r '.date // ""' <<<"$fresh_data" 2>/dev/null) || fetched_date=""
-		if [[ "$fetched_date" == "$needed_date" ]]; then
-			mkdir -p "$(dirname "$MOON_DATA_FILE")"
-			echo "$fresh_data" | jq '.' > "$MOON_DATA_FILE"
+		# Only write cache after the appropriate threshold:
+		# - Normally: after sunrise
+		# - If moonset is after sunrise: after moonset instead
+		# - Never before sunrise
+		local now
+		now=$(date +%s)
+		local moonset_hhmm moonset_epoch
+		moonset_hhmm=$(jq -r '.moonset // ""' <<<"$fresh_data" 2>/dev/null)
+		moonset_epoch=$(hhmm_to_epoch "$moonset_hhmm")
+
+		local write_threshold
+		if (( moonset_epoch > sunrise_epoch )); then
+			write_threshold=$moonset_epoch
+		else
+			write_threshold=$sunrise_epoch
+		fi
+
+		if (( now >= write_threshold )); then
+			local fetched_date
+			fetched_date=$(jq -r '.date // ""' <<<"$fresh_data" 2>/dev/null) || fetched_date=""
+			if [[ "$fetched_date" == "$needed_date" ]]; then
+				mkdir -p "$(dirname "$MOON_DATA_FILE")"
+				echo "$fresh_data" | jq '.' > "$MOON_DATA_FILE"
+			fi
 		fi
 		echo "$fresh_data"
 		return 0
