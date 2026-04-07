@@ -69,6 +69,8 @@ load_or_create_config
 : "${SHOW_MOONRISE_MOONSET:=false}"
 : "${MOONRISE_WARNING_THRESHOLD:=20}"
 : "${MOONSET_WARNING_THRESHOLD:=30}"
+: "${SHOW_MOONRISE_MOONSET_DURING_RAIN:=false}"
+: "${SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST:=false}"
 
 # ─── Validate Required Credentials ────────────────────────────────────────────
 if [[ -z "${MOON_API_KEY:-}" ]] && [[ "${MOON_PHASE_ENABLED}" == "true" ]]; then
@@ -1072,41 +1074,49 @@ build_weather_line() {
 
 	# Master toggle for all moon events
 	if [[ "$SHOW_MOONRISE_MOONSET" == "true" ]]; then
-		local now
-		now=$(date +%s)
-		
-		# Moonrise announcement
-		if (( _moonrise_epoch > 0 )); then
-			if [[ "$MOONRISE_WARNING_THRESHOLD" == "sunset" ]]; then
-				# Only show moonrise if it's after sunset
-				if (( now >= effective_sunset_epoch && _moonrise_epoch > effective_sunset_epoch )); then
-					local moonrise_time
-					moonrise_time=$(format_time "$_moonrise_epoch")
-					line+="    Moonrise: ${moonrise_time^^}"
+
+		# Rain suppression (reuse moon phase logic)
+		if [[ "$is_currently_raining" == "true" ]] && [[ "$SHOW_MOONRISE_MOONSET_DURING_RAIN" != "true" ]]; then
+			:
+		elif [[ "$has_rain_forecast" == "true" ]] && [[ "$SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST" != "true" ]]; then
+			:
+		else
+
+			local now
+			now=$(date +%s)
+			
+			# Moonrise announcement
+			if (( _moonrise_epoch > 0 )); then
+				if [[ "$MOONRISE_WARNING_THRESHOLD" == "sunset" ]]; then
+					# Only show moonrise if it's after sunset
+					if (( now >= effective_sunset_epoch && _moonrise_epoch > effective_sunset_epoch )); then
+						local moonrise_time
+						moonrise_time=$(format_time "$_moonrise_epoch")
+						line+="    Moonrise: ${moonrise_time^^}"
+					fi
+				else
+					# Numeric threshold: existing behavior
+					local mins_to_moonrise
+					mins_to_moonrise=$(minutes_until_event "$_moonrise_epoch")
+					if (( mins_to_moonrise > 0 && mins_to_moonrise <= MOONRISE_WARNING_THRESHOLD )); then
+						local moonrise_time
+						moonrise_time=$(format_time "$_moonrise_epoch")
+						line+="    Moonrise: ${moonrise_time^^}"
+					fi
 				fi
-			else
-				# Numeric threshold: existing behavior
-				local mins_to_moonrise
-				mins_to_moonrise=$(minutes_until_event "$_moonrise_epoch")
-				if (( mins_to_moonrise > 0 && mins_to_moonrise <= MOONRISE_WARNING_THRESHOLD )); then
-					local moonrise_time
-					moonrise_time=$(format_time "$_moonrise_epoch")
-					line+="    Moonrise: ${moonrise_time^^}"
+			fi
+
+			# Moonset announcement — only before sunrise (overnight/nighttime context)
+			if (( _moonset_epoch > 0 && now < effective_sunrise_epoch )); then
+				local mins_to_moonset
+				mins_to_moonset=$(minutes_until_event "$_moonset_epoch")
+				if (( mins_to_moonset > 0 && mins_to_moonset <= MOONSET_WARNING_THRESHOLD )); then
+					local moonset_time
+					moonset_time=$(format_time "$_moonset_epoch")
+					line+="    Moonset: ${moonset_time^^}"
 				fi
 			fi
 		fi
-
-		# Moonset announcement — only before sunrise (overnight/nighttime context)
-		if (( _moonset_epoch > 0 && now < effective_sunrise_epoch )); then
-			local mins_to_moonset
-			mins_to_moonset=$(minutes_until_event "$_moonset_epoch")
-			if (( mins_to_moonset > 0 && mins_to_moonset <= MOONSET_WARNING_THRESHOLD )); then
-				local moonset_time
-				moonset_time=$(format_time "$_moonset_epoch")
-				line+="    Moonset: ${moonset_time^^}"
-			fi
-		fi
-
 	fi
 
 	# Moon phase
