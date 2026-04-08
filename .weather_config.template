@@ -30,10 +30,12 @@ readonly SUNRISE_WARNING_THRESHOLD=30
 readonly SUNSET_WARNING_THRESHOLD=30
 # Degrees Celsius difference to show feels-like
 readonly FEELS_LIKE_THRESHOLD=10
+# Master toggle for rain warning
+readonly SHOW_RAIN_FORECAST=true
 # Probability threshold for rain warning (0.7 = 70%)
 readonly RAIN_FORECAST_THRESHOLD=0.7
 # Hours to look ahead for rain forecast
-readonly RAIN_FORECAST_WINDOW=1
+readonly RAIN_FORECAST_WINDOW=2
 
 # ─── Moon Phase Display Configuration ────────────────────────────────────────
 # Master toggle — show moon phase at all
