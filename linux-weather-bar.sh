@@ -189,13 +189,17 @@ format_time() {
 #   0 always
 #######################################
 hhmm_to_epoch() {
-	local hhmm="$1"
-	# Reject anything that doesn't look like HH:MM
+	local date_str="$1"   # NEW: YYYY-MM-DD
+	local hhmm="$2"
+
+	# Validate HH:MM
 	[[ "$hhmm" =~ ^[0-9]{1,2}:[0-9]{2}$ ]] || { echo "0"; return 0; }
-	local today
-	today=$(date +"%Y-%m-%d")
-	date -d "${today} ${hhmm}" +%s 2>/dev/null ||
-		date -j -f "%Y-%m-%d %H:%M" "${today} ${hhmm}" +%s 2>/dev/null ||
+
+	# Validate date
+	[[ -n "$date_str" ]] || { echo "0"; return 0; }
+
+	date -d "${date_str} ${hhmm}" +%s 2>/dev/null || \
+		date -j -f "%Y-%m-%d %H:%M" "${date_str} ${hhmm}" +%s 2>/dev/null || \
 		echo "0"
 }
 
@@ -582,31 +586,30 @@ get_moon_data() {
 	fi
 
 	if [[ -n "$fresh_data" ]]; then
-		# Only write cache after the appropriate threshold:
-		# - Normally: after sunrise
-		# - If moonset is after sunrise: after moonset instead
-		# - Never before sunrise
-		local now
-		now=$(date +%s)
 		local moonset_hhmm moonset_epoch
 		moonset_hhmm=$(jq -r '.moonset // ""' <<<"$fresh_data" 2>/dev/null)
-		moonset_epoch=$(hhmm_to_epoch "$moonset_hhmm")
 
-		local write_threshold
-		if (( moonset_epoch > sunrise_epoch )); then
-			write_threshold=$moonset_epoch
+		# IMPORTANT: you must pass the correct date here
+		local fetched_date normalized_date
+		fetched_date=$(jq -r '.date // ""' <<<"$fresh_data" 2>/dev/null)
+
+		# Convert DD/MM/YYYY → YYYY-MM-DD
+		if [[ "$fetched_date" =~ ^[0-9]{2}/[0-9]{2}/[0-9]{4}$ ]]; then
+			normalized_date=$(date -d "$(echo "$fetched_date" | awk -F/ '{print $3"-"$2"-"$1}')" +"%Y-%m-%d" 2>/dev/null)
 		else
-			write_threshold=$sunrise_epoch
+			normalized_date=""
 		fi
 
-		if (( now >= write_threshold )); then
-			local fetched_date
-			fetched_date=$(jq -r '.date // ""' <<<"$fresh_data" 2>/dev/null) || fetched_date=""
+		moonset_epoch=$(hhmm_to_epoch "$normalized_date" "$moonset_hhmm")
+
+		# Only update cache AFTER moonset
+		if (( moonset_epoch > 0 && now >= moonset_epoch )); then
 			if [[ "$fetched_date" == "$needed_date" ]]; then
 				mkdir -p "$(dirname "$MOON_DATA_FILE")"
 				echo "$fresh_data" | jq '.' > "$MOON_DATA_FILE"
 			fi
 		fi
+
 		echo "$fresh_data"
 		return 0
 	fi
@@ -647,61 +650,33 @@ get_moon_data() {
 parse_moon_times() {
     local moon_data="$1"
     local sunrise_epoch="${2:-0}"
-    local moonrise_hhmm moonset_hhmm moonrise_epoch moonset_epoch
-    local today cached_date
 
+    local moonrise_hhmm moonset_hhmm
+    local moonrise_epoch moonset_epoch
+    local cached_date normalized_date
+
+    # Extract values safely
     moonrise_hhmm=$(jq -re '.moonrise // ""' <<<"$moon_data" 2>/dev/null)
-    moonset_hhmm=$(jq  -re '.moonset  // ""' <<<"$moon_data" 2>/dev/null)
+    moonset_hhmm=$(jq -re '.moonset // ""' <<<"$moon_data" 2>/dev/null)
     cached_date=$(jq -re '.date // ""' <<<"$moon_data" 2>/dev/null)
 
-    moonrise_epoch=$(hhmm_to_epoch "$moonrise_hhmm")
-    moonrise_epoch=${moonrise_epoch:-0}
-    moonset_epoch=$(hhmm_to_epoch "$moonset_hhmm")
-    moonset_epoch=${moonset_epoch:-0}
-
-    # Midnight crossing: moonset before moonrise means it sets the *next* day
-    if (( moonrise_epoch > 0 && moonset_epoch > 0 && moonset_epoch < moonrise_epoch )); then
-        moonset_epoch=$(( moonset_epoch + 86400 ))
+    # Convert DD/MM/YYYY → YYYY-MM-DD
+    if [[ "$cached_date" =~ ^[0-9]{2}/[0-9]{2}/[0-9]{4}$ ]]; then
+        normalized_date=$(date -d "$(echo "$cached_date" | awk -F/ '{print $3"-"$2"-"$1}')" +"%Y-%m-%d" 2>/dev/null)
+    else
+        normalized_date=""
     fi
 
-    IFS=$'\t' read -r moonrise_epoch moonset_epoch < \
-        <(normalize_moon_epochs_for_overnight "$moonrise_epoch" "$moonset_epoch" "$cached_date" "$sunrise_epoch")
+    # Convert to epoch using API date (NOT system date)
+    moonrise_epoch=$(hhmm_to_epoch "$normalized_date" "$moonrise_hhmm")
+    moonrise_epoch=${moonrise_epoch:-0}
 
-    printf "%s\t%s\n" "$moonrise_epoch" "$moonset_epoch"
-}
+    moonset_epoch=$(hhmm_to_epoch "$normalized_date" "$moonset_hhmm")
+    moonset_epoch=${moonset_epoch:-0}
 
-#######################################
-# Normalize moonrise/moonset epochs for overnight data.
-# When using yesterday's cache data at current time, hhmm_to_epoch() converts
-# using today's date, producing future times. This function shifts them back
-# by 86400 seconds (1 day) to represent yesterday's actual times.
-#
-# Arguments:
-#   $1 - moonrise_epoch (to be adjusted in-place via caller)
-#   $2 - moonset_epoch (to be adjusted in-place via caller)
-#   $3 - cache date from JSON (e.g., "29/03/2026")
-# Outputs:
-#   Adjusted epochs via echo (caller captures with read)
-#   Format: "$moonrise<TAB>$moonset"
-# Returns:
-#   0 always
-#######################################
-normalize_moon_epochs_for_overnight() {
-    local moonrise_epoch="$1"
-    local moonset_epoch="$2"
-    local cached_date="$3"
-    local sunrise_epoch="${4:-0}"
-    local today yesterday now
-
-    today=$(date +"%d/%m/%Y")
-    yesterday=$(date -d "yesterday" +"%d/%m/%Y" 2>/dev/null || date -v-1d +"%d/%m/%Y" 2>/dev/null)
-    now=$(date +%s)
-
-    # If cache is from yesterday AND we're currently overnight (before today's sunrise),
-    # shift both times backward by 86400 seconds (1 day) to represent yesterday
-    if [[ "$cached_date" == "$yesterday" ]] && (( sunrise_epoch > 0 && now < sunrise_epoch )); then
-        (( moonrise_epoch > 0 )) && moonrise_epoch=$(( moonrise_epoch - 86400 ))
-        (( moonset_epoch > 0 ))  && moonset_epoch=$(( moonset_epoch - 86400 ))
+    # Handle midnight crossing (moonset is next day)
+    if (( moonrise_epoch > 0 && moonset_epoch > 0 && moonset_epoch < moonrise_epoch )); then
+        moonset_epoch=$(( moonset_epoch + 86400 ))
     fi
 
     printf "%s\t%s\n" "$moonrise_epoch" "$moonset_epoch"
@@ -726,7 +701,6 @@ is_valid_moon_data() {
 			(.moonset  | test("^[0-9]{1,2}:[0-9]{2}$|^[Nn]ot [Vv]isible$"; "i"))
 	)' <<<"$moon_data" >/dev/null 2>&1
 }
-
 
 #######################################
 # Resolve the moon phase index (0-7) from API data.
@@ -1060,9 +1034,12 @@ build_weather_line() {
 		fi
 	fi
 
-	# Rain warning
-	if [[ -n "$rain_warning" ]]; then
-    	line+="    ${rain_warning}"
+	if [[ "$SHOW_RAIN_FORECAST" == "true" ]]; then
+
+		# Rain warning
+		if [[ -n "$rain_warning" ]]; then
+			line+="    ${rain_warning}"
+		fi
 	fi
 
 	# Hoisted parsing, shared by moonrise + moonset warning
