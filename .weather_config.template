@@ -2,20 +2,21 @@
 # Copy this to .weather_config and update with your credentials
 
 # OpenWeatherMap API key (Get yours at https://openweathermap.org/api)
-API_KEY="00000000000000000000000000000000"
-API_KEY_TYPE="FREE"
+readonly API_KEY="00000000000000000000000000000000"
+readonly API_KEY_TYPE="FREE"
 
 # Moon Phase API key (Get yours at https://astroapi.byhrast.com)
-MOON_API_KEY="0000000000000000000000000000000000000000000000000000000000000000"
+readonly MOON_API_KEY="0000000000000000000000000000000000000000000000000000000000000000"
 
 # Location (latitude and longitude)
 # Example locations:
-#   DHAKA:      lat=23.7798&lon=90.4233
-#   RANGPUR:    lat=25.7388&lon=89.2519
-LOCATION="lat=23.7798&lon=90.4233"  # DHAKA
+#   DHAKA:               lat=23.7626&lon=90.3786
+#   Washington, D.C.:    lat=38.8977&lon=-77.0365
+#   New York:            lat=40.7579&lon=-73.9855
+readonly LOCATION="lat=23.7626&lon=90.3786"  # DHAKA
 
 # Timezone
-TIMEZONE="Asia/Dhaka"
+readonly TIMEZONE="Asia/Dhaka"
 
 # ─── Retry Configuration ──────────────────────────────────────────────────────
 # Maximum number of connectivity check attempts
@@ -24,6 +25,8 @@ readonly MAX_CONNECTIVITY_RETRIES=5
 readonly CONNECTIVITY_RETRY_DELAY=5
 
 # ─── Display Thresholds ───────────────────────────────────────────────────────
+# Master toggle for sunrise & sunset (works independently of MOON_PHASE_ENABLED)
+readonly SHOW_SUNRISE_SUNSET=true
 # Minutes before sunrise to show warning
 readonly SUNRISE_WARNING_THRESHOLD=30
 # Minutes before sunset to show warning
@@ -33,7 +36,7 @@ readonly FEELS_LIKE_THRESHOLD=10
 # Master toggle for rain warning
 readonly SHOW_RAIN_FORECAST=true
 # Probability threshold for rain warning (0.7 = 70%)
-readonly RAIN_FORECAST_THRESHOLD=0.7
+readonly RAIN_FORECAST_THRESHOLD=0.70
 # Hours to look ahead for rain forecast
 readonly RAIN_FORECAST_WINDOW=2
 
@@ -43,15 +46,17 @@ readonly MOON_PHASE_ENABLED=true
 # Window start: numeric (minutes after anchor) or "moonrise"
 #   - Numeric:  Minutes after sunset (or moonrise if after sunset)
 #   - "moonrise": Show from moonrise onwards
-readonly MOON_PHASE_WINDOW_START=1
+readonly MOON_PHASE_WINDOW_START="moonrise"
 # Window end: numeric (minutes after start) or "moonset"
 #   - Numeric:  Minutes after MOON_PHASE_WINDOW_START
 #   - "moonset": Show until moonset
-readonly MOON_PHASE_WINDOW_DURATION=60
+readonly MOON_PHASE_WINDOW_DURATION="moonset"
+# true → show moonphase even after sunrise; false → hide it once sunrise has passed
+readonly SHOW_MOONPHASE_DURING_DAYTIME=true
 # true → show even when currently raining; false → suppress during active rain
 readonly MOON_PHASE_SHOW_DURING_RAIN=true
 # true → show even when rain is forecasted; false → suppress during forecast rain
-readonly MOON_PHASE_SHOW_WITH_RAIN_FORECAST=false
+readonly MOON_PHASE_SHOW_WITH_RAIN_FORECAST=true
 # true → phase name in Bengali
 readonly SHOW_MOONPHASE_BENGALI=false
 # true → show English and Bengali (overrides SHOW_MOONPHASE_BENGALI)
@@ -65,8 +70,10 @@ readonly SHOW_MOONRISE_MOONSET=true
 # - Integer (e.g., 30): show moonrise when within that many minutes (current behavior)
 readonly MOONRISE_WARNING_THRESHOLD="sunset"
 # Minutes before moonset to show warning
-readonly MOONSET_WARNING_THRESHOLD=30
+readonly MOONSET_WARNING_THRESHOLD="30"
+# true → show moonset even after sunrise; false → hide it once sunrise has passed
+readonly SHOW_MOONSET_AFTER_SUNRISE=true
 # true → show even when currently raining; false → suppress during active rain
-readonly SHOW_MOONRISE_MOONSET_DURING_RAIN=false
+readonly SHOW_MOONRISE_MOONSET_DURING_RAIN=true
 # true → show even when rain is forecasted; false → suppress during forecast rain
-readonly SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST=false
+readonly SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST=true

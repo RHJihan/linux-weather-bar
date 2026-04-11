@@ -59,9 +59,11 @@ load_or_create_config
 
 # ─── Set Configuration Defaults (for set -u safety) ────────────────────────────
 : "${API_KEY_TYPE:=FREE}"
+: "${SHOW_SUNRISE_SUNSET:=true}"
 : "${MOON_PHASE_ENABLED:=false}"
 : "${MOON_PHASE_WINDOW_START:=1}"
 : "${MOON_PHASE_WINDOW_DURATION:=60}"
+: "${SHOW_MOONPHASE_DURING_DAYTIME:=false}"
 : "${MOON_PHASE_SHOW_DURING_RAIN:=true}"
 : "${MOON_PHASE_SHOW_WITH_RAIN_FORECAST:=false}"
 : "${SHOW_MOONPHASE_BENGALI:=false}"
@@ -71,6 +73,7 @@ load_or_create_config
 : "${MOONSET_WARNING_THRESHOLD:=30}"
 : "${SHOW_MOONRISE_MOONSET_DURING_RAIN:=false}"
 : "${SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST:=false}"
+: "${SHOW_MOONSET_AFTER_SUNRISE:=false}"
 
 # ─── Validate Required Credentials ────────────────────────────────────────────
 if [[ -z "${MOON_API_KEY:-}" ]] && [[ "${MOON_PHASE_ENABLED}" == "true" ]]; then
@@ -524,98 +527,135 @@ fetch_moon_data() {
 
 #######################################
 # Return current moon data — from cache if valid, otherwise fetched live.
-# Handles overnight hours by reusing yesterday's cache when moonset hasn't passed.
-# Returns empty string on total failure.
+#
+# Handles overnight logic and ensures moon data is always current:
+# - Reuses cached data when it is still valid for the required date
+# - Forces refresh when the cached moonset has already passed
+# - Uses yesterday's data during overnight hours (before sunrise)
 #
 # Refresh Logic:
 # 1. Load cache
-# 2. If cache is fresh (today's data or yesterday overnight), return it
-# 3. If cache is stale:
-#    a. Try to fetch new data from API
-#    b. Write to cache only if sunrise has already passed (daytime, not overnight)
-#    c. If fetch fails, return old cache as fallback (graceful degradation)
-# 4. If cache is empty and fetch fails, return empty
+# 2. Determine required date:
+#    - If before sunrise → use yesterday's data
+#    - Otherwise → use today's data
+#
+# 3. Validate cache:
+#    - If cached date matches required date AND
+#      moonset has NOT passed → return cache immediately
+#    - If cached moonset has already passed → invalidate cache
+#
+# 4. If cache is stale or invalid:
+#    a. Fetch fresh data from API
+#    b. Use overnight-aware API request when needed
+#    c. Update cache ONLY if:
+#       - Fetch is successful
+#       - Moonset for fetched data has passed
+#       - Fetched date matches the required date
+#
+# 5. Fallback behavior:
+#    - If fetch fails → return existing cache (graceful degradation)
+#    - If no cache exists and fetch fails → return empty string
 #
 # Globals:
 #   MOON_DATA_FILE, MOON_API_URL, MOON_API_KEY, LOCATION, TIMEZONE
+#
 # Arguments:
-#   $1 - sunrise_epoch (optional; if provided, uses for fresh check)
+#   $1 - sunrise_epoch (optional; used to determine overnight state)
+#
 # Outputs:
 #   JSON string, or empty string on total failure
+#
 # Returns:
 #   0 always
 #######################################
 get_moon_data() {
 	local sunrise_epoch="${1:-0}"
-	local cache now cached_date needed_date
+	local cache now cached_date needed_date moonset_epoch=0
 
 	cache=$(load_moon_cache)
 	now=$(date +%s)
 
-	# Determine which date's moon data we actually need:
-	# - After midnight but before sunrise → need YESTERDAY's data
-	# - After sunrise (daytime/evening) → need TODAY's data
-	if (( sunrise_epoch > 0 && now < sunrise_epoch )); then
-		needed_date=$(date -d "yesterday" +"%d/%m/%Y" 2>/dev/null || date -v-1d +"%d/%m/%Y" 2>/dev/null)
-	else
-		needed_date=$(date +"%d/%m/%Y")
+	# Today's and yesterday's date
+	local today yesterday
+	today=$(date +"%d/%m/%Y")
+	yesterday=$(date -d "yesterday" +"%d/%m/%Y" 2>/dev/null || date -v-1d +"%d/%m/%Y" 2>/dev/null)
+
+	# Extract cached date
+	cached_date=$(jq -r '.date // ""' <<<"$cache" 2>/dev/null) || cached_date=""
+
+	# Extract moonset from cache (if exists)
+	if [[ -n "$cache" && "$cache" != "{}" ]]; then
+		local moonset_hhmm normalized_date
+
+		moonset_hhmm=$(jq -r '.moonset // ""' <<<"$cache" 2>/dev/null)
+
+		if [[ "$cached_date" =~ ^[0-9]{2}/[0-9]{2}/[0-9]{4}$ ]]; then
+			normalized_date=$(date -d "$(echo "$cached_date" | awk -F/ '{print $3"-"$2"-"$1}')" +"%Y-%m-%d" 2>/dev/null)
+			moonset_epoch=$(hhmm_to_epoch "$normalized_date" "$moonset_hhmm")
+		fi
 	fi
 
-	# Check if cache already has the needed date
-	cached_date=$(jq -r '.date // ""' <<<"$cache" 2>/dev/null) || cached_date=""
+	# ─────────────────────────────────────────────
+	# DETERMINE NEEDED DATE (DATA-DRIVEN)
+	# ─────────────────────────────────────────────
+	if [[ "$cached_date" == "$yesterday" ]] && (( moonset_epoch > 0 && now < moonset_epoch )); then
+		# Still in yesterday's moon cycle
+		needed_date="$yesterday"
+	else
+		needed_date="$today"
+	fi
+
+	# ─────────────────────────────────────────────
+	# CACHE VALIDATION
+	# ─────────────────────────────────────────────
 	if [[ "$cached_date" == "$needed_date" ]]; then
 		echo "$cache"
 		return 0
 	fi
 
-	# Cache doesn't have needed date — fetch it
+	# ─────────────────────────────────────────────
+	# FETCH FRESH DATA
+	# ─────────────────────────────────────────────
 	local fresh_data
+
 	if (( sunrise_epoch > 0 && now < sunrise_epoch )); then
-		# Overnight — fetch with today's date explicitly
-		local date_param time_param url response
-		date_param="$needed_date"
+		# Overnight → explicit date fetch
+		local time_param url response
+
 		time_param=$(date +"%H:%M")
-		url="${MOON_API_URL}?key=${MOON_API_KEY}&${LOCATION}&tz=${TIMEZONE}&date=${date_param}&time=${time_param}"
+		url="${MOON_API_URL}?key=${MOON_API_KEY}&${LOCATION}&tz=${TIMEZONE}&date=${needed_date}&time=${time_param}"
+
 		response=$(curl -sf "$url" 2>/dev/null) || response=""
+
 		if [[ -n "$response" ]] && echo "$response" | jq -e '.moonrise' >/dev/null 2>&1; then
 			fresh_data="$response"
 		fi
 	else
-		# Daytime/evening — use existing fetch function
+		# Daytime → normal fetch
 		fresh_data=$(fetch_moon_data) || fresh_data=""
 	fi
 
+	# ─────────────────────────────────────────────
+	# CACHE WRITE (ALWAYS ON SUCCESS)
+	# ─────────────────────────────────────────────
 	if [[ -n "$fresh_data" ]]; then
-		local moonset_hhmm moonset_epoch
-		moonset_hhmm=$(jq -r '.moonset // ""' <<<"$fresh_data" 2>/dev/null)
-
-		# IMPORTANT: you must pass the correct date here
-		local fetched_date normalized_date
+		local fetched_date
 		fetched_date=$(jq -r '.date // ""' <<<"$fresh_data" 2>/dev/null)
 
-		# Convert DD/MM/YYYY → YYYY-MM-DD
-		if [[ "$fetched_date" =~ ^[0-9]{2}/[0-9]{2}/[0-9]{4}$ ]]; then
-			normalized_date=$(date -d "$(echo "$fetched_date" | awk -F/ '{print $3"-"$2"-"$1}')" +"%Y-%m-%d" 2>/dev/null)
-		else
-			normalized_date=""
-		fi
-
-		moonset_epoch=$(hhmm_to_epoch "$normalized_date" "$moonset_hhmm")
-
-		# Only update cache AFTER moonset
-		if (( moonset_epoch > 0 && now >= moonset_epoch )); then
-			if [[ "$fetched_date" == "$needed_date" ]]; then
-				mkdir -p "$(dirname "$MOON_DATA_FILE")"
-				echo "$fresh_data" | jq '.' > "$MOON_DATA_FILE"
-			fi
+		# Safety: only store correct date
+		if [[ "$fetched_date" == "$needed_date" ]]; then
+			mkdir -p "$(dirname "$MOON_DATA_FILE")"
+			echo "$fresh_data" | jq '.' > "$MOON_DATA_FILE"
 		fi
 
 		echo "$fresh_data"
 		return 0
 	fi
 
-	# Fetch failed — return old cache as fallback
-	if [[ -n "$cache" ]] && [[ "$cache" != "{}" ]]; then
+	# ─────────────────────────────────────────────
+	# FALLBACK
+	# ─────────────────────────────────────────────
+	if [[ -n "$cache" && "$cache" != "{}" ]]; then
 		echo "$cache"
 		return 0
 	fi
@@ -796,7 +836,7 @@ resolve_window_start() {
 #   $3 - moonset_epoch (0 if unavailable)
 #   $4 - sunrise_epoch (0 if unavailable; used to enforce solar ceiling)
 # Outputs:
-#   Window end epoch, clamped to sunrise_epoch
+#   Window end epoch
 #######################################
 resolve_window_end() {
 	local param="$1" window_start="$2" moonset="$3" sunrise="${4:-0}"
@@ -814,9 +854,6 @@ resolve_window_end() {
 	else
 		end=$(( window_start + ${param:-60} * 60 ))
 	fi
-
-	# Enforce solar ceiling — window must not extend past sunrise
-	(( sunrise > 0 && end > sunrise )) && end=$sunrise
 
 	echo "$end"
 }
@@ -880,14 +917,17 @@ resolve_moon_phase() {
 	local now
 	now=$(date +%s)
 
-	# Solar window is active if:
-	#   now >= sunset_epoch AND now < sunrise_epoch
-	# This naturally handles crossing midnight because:
-	#   - Before midnight: sunset < midnight < sunrise (next day)
-	#   - After midnight: yesterday's sunset < now < today's sunrise
-	if ! (( now >= sunset_epoch && now < sunrise_epoch )); then
-		# Not in solar window (daytime) — suppress moon phase
-		return 0
+	# Skip solar window restriction if show phase after sunrise is enabled.
+	if [[ "$SHOW_MOONPHASE_DURING_DAYTIME" != "true" ]]; then
+		# Solar window is active if:
+		#   now >= sunset_epoch AND now < sunrise_epoch
+		# This naturally handles crossing midnight because:
+		#   - Before midnight: sunset < midnight < sunrise (next day)
+		#   - After midnight: yesterday's sunset < now < today's sunrise
+		if ! (( now >= sunset_epoch && now < sunrise_epoch )); then
+			# Not in window (daytime) — suppress moon phase
+			return 0
+		fi
 	fi
 
 	# 5. Handle "not visible" corner cases first (before window check)
@@ -1011,26 +1051,28 @@ build_weather_line() {
 		line="               ${icon}   ${desc}   ${temp}°C (Feels ${formatted_feels_like}°C)"
 	fi
 
-	# Add sunrise info if within threshold
-    if [[ $sunrise_epoch -gt 0 ]]; then
-        local minutes
-        minutes=$(minutes_until_event "$sunrise_epoch")
-        if ((minutes > 0 && minutes <= SUNRISE_WARNING_THRESHOLD)); then
-            local sunrise_time
-            sunrise_time=$(format_time "$sunrise_epoch")
-            line+="    Sunrise: ${sunrise_time^^}"
-        fi
-    fi
-
-	# Add sunset info if within threshold (use effective_sunset for overnight accuracy)
-	if [[ $effective_sunset_epoch -gt 0 ]]; then
+	if [[ "$SHOW_SUNRISE_SUNSET" == "true" ]]; then
 		local minutes
-		minutes=$(minutes_until_event "$effective_sunset_epoch")
 
-		if ((minutes > 0 && minutes <= SUNSET_WARNING_THRESHOLD)); then
-			local sunset_time
-			sunset_time=$(format_time "$effective_sunset_epoch")
-			line+="    Sunset: ${sunset_time^^}"
+		# Add sunrise info if within threshold
+		if [[ $sunrise_epoch -gt 0 ]]; then
+			minutes=$(minutes_until_event "$sunrise_epoch")
+			if ((minutes > 0 && minutes <= SUNRISE_WARNING_THRESHOLD)); then
+				local sunrise_time
+				sunrise_time=$(format_time "$sunrise_epoch")
+				line+="    Sunrise: ${sunrise_time^^}"
+			fi
+		fi
+
+		# Add sunset info if within threshold (use effective_sunset for overnight accuracy)
+		if [[ $effective_sunset_epoch -gt 0 ]]; then
+			minutes=$(minutes_until_event "$effective_sunset_epoch")
+
+			if ((minutes > 0 && minutes <= SUNSET_WARNING_THRESHOLD)); then
+				local sunset_time
+				sunset_time=$(format_time "$effective_sunset_epoch")
+				line+="    Sunset: ${sunset_time^^}"
+			fi
 		fi
 	fi
 
@@ -1040,6 +1082,13 @@ build_weather_line() {
 		if [[ -n "$rain_warning" ]]; then
 			line+="    ${rain_warning}"
 		fi
+	fi
+	
+	# Moon phase
+	local moon_phase
+	moon_phase=$(resolve_moon_phase "$effective_sunset_epoch" "$effective_sunrise_epoch" "$is_currently_raining" "$has_rain_forecast" "$moon_data")
+	if [[ -n "$moon_phase" ]]; then
+		line+="    ${moon_phase}"
 	fi
 
 	# Hoisted parsing, shared by moonrise + moonset warning
@@ -1085,22 +1134,20 @@ build_weather_line() {
 
 			# Moonset announcement
 			if (( _moonset_epoch > 0 && now < _moonset_epoch )); then
-				local mins_to_moonset
-				mins_to_moonset=$(minutes_until_event "$_moonset_epoch")
-				if (( mins_to_moonset > 0 && mins_to_moonset <= MOONSET_WARNING_THRESHOLD )); then
-					local moonset_time
-					moonset_time=$(format_time "$_moonset_epoch")
-					line+="    Moonset: ${moonset_time^^}"
+				if [[ "$SHOW_MOONSET_AFTER_SUNRISE" == "false" ]] && (( now >= sunrise_epoch )); then
+					:
+				else
+					local mins_to_moonset
+					mins_to_moonset=$(minutes_until_event "$_moonset_epoch")
+
+					if (( mins_to_moonset > 0 && mins_to_moonset <= MOONSET_WARNING_THRESHOLD )); then
+						local moonset_time
+						moonset_time=$(format_time "$_moonset_epoch")
+						line+="    Moonset: ${moonset_time^^}"
+					fi
 				fi
 			fi
 		fi
-	fi
-
-	# Moon phase
-	local moon_phase
-	moon_phase=$(resolve_moon_phase "$effective_sunset_epoch" "$effective_sunrise_epoch" "$is_currently_raining" "$has_rain_forecast" "$moon_data")
-	if [[ -n "$moon_phase" ]]; then
-		line+="    ${moon_phase}"
 	fi
 
 	echo "$line"
