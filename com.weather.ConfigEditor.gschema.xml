@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="com.weather.ConfigEditor" path="/com/weather/ConfigEditor/">
+    <key name="last-config-path" type="s">
+      <default>""</default>
+      <summary>Last opened config file</summary>
+    </key>
+    <key name="last-ip-mapping-path" type="s">
+      <default>""</default>
+      <summary>Last used IP mapping CSV file</summary>
+    </key>
+  </schema>
+</schemalist>
