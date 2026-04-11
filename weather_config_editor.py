@@ -49,6 +49,7 @@ class VarSchema:
     sentinel_value: str = ""                                   # e.g. "moonrise"
     group: str = "General"
     readonly: bool = False                                     # bash `readonly`
+    secret: bool = False                                       # mask when unfocused
 
 
 @dataclass
@@ -185,12 +186,12 @@ SCHEMA: list[VarSchema] = [
 
     # ── API Keys ──────────────────────────────────────────────────────────────
     VarSchema("API_KEY",       "OpenWeatherMap API Key",  VarType.STRING,
-              "Your API key from openweathermap.org", readonly=True, group="API Keys"),
+              "Your API key from openweathermap.org", readonly=True, group="API Keys", secret=True),
     VarSchema("API_KEY_TYPE",  "OpenWeatherMap API Key Type",            VarType.ENUM,
               "Account tier",
               choices=["FREE", "PRO"], default="PRO", readonly=True, group="API Keys"),
     VarSchema("MOON_API_KEY",  "Moon Phase API Key",      VarType.STRING,
-              "Your key from astroapi.byhrast.com", readonly=True, group="API Keys"),
+              "Your key from astroapi.byhrast.com", readonly=True, group="API Keys", secret=True),
 
     # ── Location & Timezone ───────────────────────────────────────────────────
     VarSchema("LOCATION",  "Location",  VarType.STRING,
@@ -405,13 +406,28 @@ class StringRow(BaseRow):
     def __init__(self, entry: ConfigEntry,
                  on_change: Callable[[ConfigEntry], None]) -> None:
         super().__init__(entry, on_change)
+        self._is_secret = entry.schema.secret
         self._entry = Gtk.Entry()
         self._entry.set_text(entry.display_value)
         self._entry.set_valign(Gtk.Align.CENTER)
         self._entry.set_hexpand(True)
+        if self._is_secret:
+            # Start masked; reveal on focus
+            self._entry.set_visibility(False)
+            self._entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+            focus_ctrl = Gtk.EventControllerFocus()
+            focus_ctrl.connect("enter", self._on_focus_enter)
+            focus_ctrl.connect("leave", self._on_focus_leave)
+            self._entry.add_controller(focus_ctrl)
         self._entry.connect("changed", self._on_text_changed)
         self.add_suffix(self._entry)
         self.set_activatable_widget(self._entry)
+
+    def _on_focus_enter(self, *_: Any) -> None:
+        self._entry.set_visibility(True)
+
+    def _on_focus_leave(self, *_: Any) -> None:
+        self._entry.set_visibility(False)
 
     def _on_text_changed(self, widget: Gtk.Entry) -> None:
         self.entry.display_value = widget.get_text()
