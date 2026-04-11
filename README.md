@@ -6,61 +6,191 @@ A lightweight, feature-rich Bash script that displays **live weather, rain forec
 
 ## ✨ Features
 
-- **Current weather** — condition, temperature, feels-like, and weather emoji
-- **Sunrise & sunset warnings** — alerts when sunrise/sunset is approaching
-- **Rain forecast** — upcoming rain with time and probability from OWM forecast API
-- **Moon phase display** — shows current moon phase with emoji, only during the actual lunar visibility window (sunset → moonrise → moonset → sunrise)
-- **Moonrise & moonset announcements** — warns when moonrise or moonset is approaching, mirrors the sunrise/sunset warning pattern
-- **Smart solar/lunar window engine** — calculates the intersection of the solar and lunar windows using Unix epoch math; handles midnight crossing correctly
-- **Bilingual support** — moon phase names in English, Bengali, or both
-- **Aggressive caching** — sun and moon data cached to JSON; API is called only when necessary
-- **Graceful degradation** — falls back to cached data if API is unreachable
-- **Configurable** — all behavior controlled via a single `.weather_config` file
+### 🌦️ Weather Engine
+
+* **Live weather data** (temperature, feels-like, condition, emoji)
+* **Smart feels-like display** (only when meaningful difference)
+* **Sunrise & sunset awareness**
+
+  * Pre-warning notifications
+  * Accurate across midnight transitions
+* **Rain forecast system**
+
+  * Predicts upcoming rain within a configurable window
+  * Shows **time, probability, and condition**
+  * Uses OpenWeatherMap forecast API (FREE & PRO supported)
 
 ---
 
-## 📸 Output Examples
+### 🌙 Advanced Moon System (Highly Accurate)
+
+This is not a simple “show moon phase” feature — it’s a **full lunar visibility engine**:
+
+#### 🌘 Moon Phase Display
+
+* Shown **only when physically meaningful**
+* Based on **intersection of:**
+
+  * Solar window → `sunset → sunrise`
+  * Lunar window → `moonrise → moonset`
+* Fully configurable:
+
+  * Start: `moonrise` or offset from sunset
+  * End: `moonset` or duration
+
+#### 🌕 Moonrise & Moonset Alerts
+
+* Independent from moon phase display
+* Configurable warnings before events
+* Supports:
+
+  * Showing moonset **after sunrise**
+  * Suppression during rain / forecast
+  * Flexible thresholds
+
+#### 🌐 Localization
+
+* English
+* Bengali
+* Bilingual (English + Bengali)
+
+---
+
+### 🧠 Smart Time Engine
+
+* Uses **Unix epoch math** for all comparisons
+* Handles:
+
+  * Midnight crossing
+  * Overnight logic (yesterday vs today)
+  * Missing API edge cases
+* Automatically adjusts:
+
+  * “Effective sunset” (yesterday vs today)
+  * “Effective sunrise” (next day logic)
+
+---
+
+### ⚡ Performance & Reliability
+
+* **Aggressive caching**
+
+  * Sun data → `~/.cache/weather/sun-data.json`
+  * Moon data → `~/.cache/weather/moon-data.json`
+* **Minimal API usage**
+
+  * Fetches only when necessary
+* **Graceful degradation**
+
+  * Falls back to cache if offline
+* **Connectivity retry system**
+
+  * Uses `nmcli` or fallback ping
+
+---
+
+## 🧩 Python Config Manager (GUI)
+
+A major feature of this project is the included:
+
+### 🖥️ `weather_config_editor.py`
+
+A **modern GTK4 + libadwaita application** for managing `.weather_config`.
+
+#### 🚀 Highlights
+
+* **Schema-driven UI**
+
+  * Automatically renders fields based on variable type
+* Supports:
+
+  * Integer, float, boolean, enum
+  * Special moon window controls (numeric OR sentinel like `"moonrise"`)
+* **Grouped settings UI**
+
+  * Weather
+  * Moon phase
+  * Moonrise/moonset
+  * API keys
+  * Network
+* **Dependency-aware controls**
+
+  * Disables irrelevant settings automatically
+* **Live validation**
+
+  * Prevents invalid config values
+* **Safe file editing**
+
+  * Preserves comments and formatting
+* **Change tracking**
+
+  * Save button activates only when needed
+
+---
+
+### 📍 Smart Location Picker
+
+* Loads locations from `location_mappings.csv`
+* Features:
+
+  * Dropdown of predefined locations
+  * Manual lat/lon override
+  * Google Maps integration (one-click open)
+* Remembers last used dataset via GSettings
+
+---
+
+### 🧠 Intelligent Input Types
+
+Special handling for advanced config:
+
+* `MOON_WINDOW` fields:
+
+  * Toggle between:
+
+    * Numeric value
+    * Semantic values (`moonrise`, `moonset`, `sunset`)
+* Prevents invalid combinations automatically
+
+---
+
+### ▶️ Running the Config Manager
+
+```bash
+GSETTINGS_SCHEMA_DIR=. python weather_config_editor.py
+```
+
+Requires:
+
+* GTK4
+* libadwaita (Adw)
+
+---
+
+## 📸 Example Output
 
 ```
 ☀️   Clear Sky   32°C (Feels 36°C)    Sunset: 6:18 PM    🌕  Full Moon
 ⛅️   Few Clouds   28°C    🌧️   Rain Likely ≈ 9:00 PM (73%)
 🌫️   Haze   28°C    🌕  পূর্ণিমা
 ☁️   Scattered Clouds   28°C    🌖  Waning Gibbous
+🌫️   Haze   30°C    🌓  First Quarter (শুক্লপক্ষের অর্ধচন্দ্র)
 🌦️   Light Rain   26°C
 ☀️   Clear Sky   32°C    Moonset: 8:24 AM
-🌕   Full Moon   28°C    Moonrise: 7:45 PM
 ```
 
 ---
 
-## 🔧 Requirements
-
-| Tool | Purpose |
-|------|---------|
-| `bash` ≥ 4.0 | Script runtime |
-| `curl` | API requests |
-| `jq` | JSON parsing |
-| `nmcli` *(optional)* | Connectivity check (falls back to ping) |
-
----
-
-## 🚀 Installation
+## 🔧 Installation
 
 ```bash
-# Clone the repo
 git clone https://github.com/YOUR_USERNAME/linux-weather-bar.git
 cd linux-weather-bar
 
-# Copy the config template
 cp .weather_config.template .weather_config
-
-# Edit your config
 nano .weather_config
 
-# Make executable
 chmod +x linux-weather-bar.sh
-
-# Test run
 ./linux-weather-bar.sh
 ```
 
@@ -68,164 +198,132 @@ chmod +x linux-weather-bar.sh
 
 ## ⚙️ Configuration
 
-All settings live in `.weather_config` (never committed — git-ignored). A template is provided at `.weather_config.template`.
+All settings live in:
+
+```
+.weather_config
+```
 
 ### Required
 
 ```bash
 API_KEY="your_openweathermap_api_key"
-LOCATION="lat=23.7626&lon=90.3786"        # your coordinates
-```
-
-### Moon Phase (Optional)
-
-```bash
-MOON_API_KEY="your_astroapi_key"          # from astroapi.byhrast.com
-MOON_PHASE_ENABLED=true                   # master toggle (default: false)
-TIMEZONE="Asia/Dhaka"                     # your timezone
-```
-
-### Display Thresholds
-
-```bash
-FEELS_LIKE_THRESHOLD=3                    # show feels-like if diff exceeds this (°C)
-SUNRISE_WARNING_THRESHOLD=30              # warn N minutes before sunrise
-SUNSET_WARNING_THRESHOLD=30               # warn N minutes before sunset
-SHOW_MOONRISE_MOONSET=true                # master toggle for moonrise/moonset announcements
-MOONRISE_WARNING_THRESHOLD=30             # warn N minutes before moonrise
-MOONSET_WARNING_THRESHOLD=30              # warn N minutes before moonset
-```
-
-### Rain Forecast
-
-```bash
-API_KEY_TYPE=FREE                         # FREE (3-hourly) or PRO (hourly)
-RAIN_FORECAST_THRESHOLD=0.4               # probability threshold (0.0–1.0)
-RAIN_FORECAST_WINDOW=6                    # hours ahead to check
-MAX_CONNECTIVITY_RETRIES=3
-CONNECTIVITY_RETRY_DELAY=2
-```
-
-### Moon Phase Window
-
-```bash
-# When to START showing the moon phase:
-# "moonrise"  → exactly at moonrise
-# numeric     → N minutes after the later of (sunset or moonrise)
-MOON_PHASE_WINDOW_START="moonrise"
-
-# How long to show the moon phase:
-# "moonset"   → until moonset
-# numeric     → N minutes after start
-MOON_PHASE_WINDOW_DURATION="moonset"
-
-# Rain suppression
-MOON_PHASE_SHOW_DURING_RAIN=false        # hide moon phase if currently raining
-MOON_PHASE_SHOW_WITH_RAIN_FORECAST=false # hide moon phase if rain is forecast
-```
-
-### Language
-
-```bash
-SHOW_MOONPHASE_BENGALI=false             # Bengali only
-SHOW_MOONPHASE_BILINGUAL=false           # English + Bengali (overrides BENGALI)
+LOCATION="lat=23.7626&lon=90.3786"
 ```
 
 ---
 
-## 🌙 Moon Phase Logic
+### Moon (Optional)
 
-The moon phase is shown **only during the intersection window** of:
+```bash
+MOON_API_KEY="your_astroapi_key"
+MOON_PHASE_ENABLED=true
+TIMEZONE="Asia/Dhaka"
+```
 
-- **Solar window:** Sunset (day N) → Sunrise (day N+1)
-- **Lunar window:** Moonrise → Moonset
+---
 
-### Moonrise & Moonset Announcements
+### Key Controls
 
-Independently of moon phase display, the script warns when moonrise or moonset is approaching (within `MOONRISE_WARNING_THRESHOLD` / `MOONSET_WARNING_THRESHOLD` minutes). Moonset is shown even after sunrise if the moon hasn't set yet. Controlled by the `SHOW_MOONRISE_MOONSET` master toggle.
+#### Moon Phase Window
 
-All time comparisons use Unix epoch to handle midnight crossing correctly.
+```bash
+MOON_PHASE_WINDOW_START="moonrise"   # or minutes
+MOON_PHASE_WINDOW_DURATION="moonset" # or minutes
+```
 
-**Corner cases handled:**
-- `moonrise: "Not visible"` → treated as Sunset + 30 minutes
-- `moonset: "Not visible"` → treated as 23:59 of the current day
-- Overnight (after midnight, before sunrise) → uses yesterday's moon data
-- Cache is refreshed only when needed — at most once per day
+#### Moonrise / Moonset
+
+```bash
+SHOW_MOONRISE_MOONSET=true
+MOONRISE_WARNING_THRESHOLD=30
+MOONSET_WARNING_THRESHOLD=30
+SHOW_MOONSET_AFTER_SUNRISE=true
+```
+
+#### Rain Behavior
+
+```bash
+MOON_PHASE_SHOW_DURING_RAIN=false
+MOON_PHASE_SHOW_WITH_RAIN_FORECAST=false
+```
 
 ---
 
 ## 🔌 Bar Integration
 
-### GNOME (Executor Extension) — Recommended
+### GNOME (Executor)
 
-Install the [Executor](https://extensions.gnome.org/extension/2932/executor/) GNOME Shell extension, then add a new command:
+* Command:
 
-- **Command:** `/path/to/linux-weather-bar.sh`
-- **Interval:** `600` seconds (10 minutes)
-- **Location:** Top bar, left/center/right — your choice
+```bash
+/path/to/linux-weather-bar.sh
+```
 
-The script output appears directly in your GNOME top bar and refreshes every 10 minutes.
+* Interval: `600`
+
+---
 
 ### Waybar
 
-In your `config.jsonc`:
-
 ```json
 "custom/weather": {
-    "exec": "~/.local/share/bin/linux-weather-bar.sh",
-    "interval": 600,
-    "format": "{}",
-    "tooltip": false
+  "exec": "~/.local/bin/linux-weather-bar.sh",
+  "interval": 600
 }
 ```
+
+---
 
 ### Polybar
 
 ```ini
 [module/weather]
 type = custom/script
-exec = ~/.local/share/bin/linux-weather-bar.sh
+exec = ~/.local/bin/linux-weather-bar.sh
 interval = 600
 ```
+
+---
 
 ### i3blocks
 
 ```ini
 [weather]
-command=~/.local/share/bin/linux-weather-bar.sh
+command=~/.local/bin/linux-weather-bar.sh
 interval=600
 ```
 
-Any bar or launcher that can execute a shell script and display its stdout output will work.
-
 ---
 
-## 📁 File Structure
+## 📁 Project Structure
 
 ```
 linux-weather-bar/
-├── linux-weather-bar.sh        # main script
-├── .weather_config.template    # config template (committed)
-├── .weather_config             # your config (git-ignored)
+├── linux-weather-bar.sh        # main engine
+├── weather_config_editor.py    # GTK config manager
+├── .weather_config.template
+├── .weather_config            # user config
 └── README.md
-```
-
-Cache files (auto-created at runtime):
-
-```
-~/.cache/weather/
-├── sun-data.json               # today's sunrise/sunset
-└── moon-data.json              # current moon data
 ```
 
 ---
 
-## 🌐 APIs Used
+## 🌐 APIs
 
-| API | Free Tier | Used For |
-|-----|-----------|---------|
-| [OpenWeatherMap](https://openweathermap.org/api) | ✅ Yes | Weather, forecast, sunrise/sunset |
-| [AstroAPI by Hrast](https://astroapi.byhrast.com) | ✅ Yes | Moon phase, moonrise, moonset |
+| API            | Purpose                       |
+| -------------- | ----------------------------- |
+| OpenWeatherMap | Weather + forecast            |
+| AstroAPI       | Moon phase, moonrise, moonset |
+
+---
+
+## 🧠 Design Philosophy
+
+* **Accuracy over gimmicks**
+* **Minimal API usage**
+* **Correct handling of real-world astronomy edge cases**
+* **User control without complexity**
 
 ---
 
@@ -240,9 +338,3 @@ GNU Affero General Public License v3.0 — see [LICENSE](LICENSE) for details.
 Pull requests are welcome. For major changes, please open an issue first.
 
 If this script works on your setup with a different bar or distro, feel free to open a PR adding it to the compatibility notes.
-
----
-
-## 🔍 Keywords
-
-`gnome` `gnome shell` `executor` `gnome extension` `gnome top bar` `waybar` `polybar` `weather` `bash` `shell script` `openweathermap` `moon phase` `lunar` `i3` `sway` `hyprland` `linux` `status bar` `Bengali` `bilingual` `moonrise` `moonset` `rain forecast`
