@@ -214,7 +214,7 @@ GROUPS: list[str] = list(dict.fromkeys(s.group for s in SCHEMA))
 
 @dataclass(frozen=True)
 class LocationEntry:
-    """A unique (name, lat, lon) location from location_mappings.csv."""
+    """A unique (name, lat, lon) location from ip_mappings.csv."""
     name: str
     lat: str
     lon: str
@@ -230,11 +230,11 @@ class LocationEntry:
 
 class IpMappingStore:
     """
-    Loads location_mappings.csv, deduplicates by (NAME, LATITUDE, LONGITUDE),
+    Loads ip_mappings.csv, deduplicates by (NAME, LATITUDE, LONGITUDE),
     and persists the last used CSV path via GSettings (same key namespace).
     """
 
-    CSV_FILENAME = "location_mappings.csv"
+    CSV_FILENAME = "ip_mappings.csv"
 
     def __init__(self, settings: Optional[Gio.Settings]) -> None:
         self._settings = settings
@@ -242,7 +242,7 @@ class IpMappingStore:
     # ── Discovery (mirrors WeatherConfigApp._get_local_config pattern) ────────
 
     def find_default_csv(self) -> Optional[Path]:
-        """Check script directory for location_mappings.csv (auto-load, same as .weather_config)."""
+        """Check script directory for ip_mappings.csv (auto-load, same as .weather_config)."""
         candidate = Path(__file__).resolve().parent / self.CSV_FILENAME
         return candidate if candidate.exists() else None
 
@@ -449,6 +449,8 @@ class IntegerRow(BaseRow):
         self._spin = Gtk.SpinButton(adjustment=adj, digits=0)
         self._spin.set_valign(Gtk.Align.CENTER)
         self._spin.connect("value-changed", self._on_value_changed)
+        # GTK4: SpinButton implements Editable directly; "changed" fires on every keystroke
+        self._spin.connect("changed", self._on_text_changed)
         self.add_suffix(self._spin)
         self.set_activatable_widget(self._spin)
 
@@ -457,6 +459,11 @@ class IntegerRow(BaseRow):
             return int(self.entry.display_value)
         except ValueError:
             return 0
+
+    def _on_text_changed(self, widget: Gtk.SpinButton) -> None:
+        """Fires on every keystroke; commit the typed text immediately."""
+        self._spin.update()
+        self._on_value_changed(self._spin)
 
     def _on_value_changed(self, widget: Gtk.SpinButton) -> None:
         self.entry.display_value = str(int(widget.get_value()))
@@ -546,7 +553,7 @@ class EnumRow(BaseRow):
 class LocationRow(BaseRow):
     """
     LOCATION row with:
-    - Preset dropdown loaded from location_mappings.csv
+    - Preset dropdown loaded from ip_mappings.csv
     - CUSTOM checkbox to reveal manual lat/lon entries (existing UI)
     - pin button to open Google Maps
     """
@@ -752,6 +759,8 @@ class MoonWindowRow(BaseRow):
         self._spin = Gtk.SpinButton(adjustment=adj, digits=0)
         self._spin.set_sensitive(not self._is_sentinel)
         self._spin.connect("value-changed", self._on_spin_changed)
+        # GTK4: SpinButton implements Editable directly; "changed" fires on every keystroke
+        self._spin.connect("changed", self._on_spin_text_changed)
 
         box.append(self._check)
         box.append(self._spin)
@@ -771,6 +780,11 @@ class MoonWindowRow(BaseRow):
         else:
             self.entry.display_value = str(int(self._spin.get_value()))
         self._notify_change()
+
+    def _on_spin_text_changed(self, widget: Gtk.SpinButton) -> None:
+        """Fires on every keystroke; commit the typed text immediately."""
+        self._spin.update()
+        self._on_spin_changed(self._spin)
 
     def _on_spin_changed(self, widget: Gtk.SpinButton) -> None:
         if not self._is_sentinel:
@@ -1248,3 +1262,4 @@ if __name__ == "__main__":
     import sys
     app = WeatherConfigApp()
     sys.exit(app.run(sys.argv))
+    
