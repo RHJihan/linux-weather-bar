@@ -444,7 +444,7 @@ class IntegerRow(BaseRow):
                  on_change: Callable[[ConfigEntry], None]) -> None:
         super().__init__(entry, on_change)
         adj = Gtk.Adjustment(value=self._safe_int(),
-                             lower=-9999, upper=99999,
+                             lower=0, upper=99999,
                              step_increment=1, page_increment=10)
         self._spin = Gtk.SpinButton(adjustment=adj, digits=0)
         self._spin.set_valign(Gtk.Align.CENTER)
@@ -1262,4 +1262,3 @@ if __name__ == "__main__":
     import sys
     app = WeatherConfigApp()
     sys.exit(app.run(sys.argv))
-    
