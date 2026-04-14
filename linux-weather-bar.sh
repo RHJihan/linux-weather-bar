@@ -501,6 +501,25 @@ moon_cache_is_fresh() {
 	return 1
 }
 
+call_moon_api() {
+    local date_param="$1"
+    local time_param="$2"
+    local url response
+
+    # Validate inputs
+    [ -z "$date_param" ] && return 1
+    [ -z "$time_param" ] && return 1
+
+    url="${MOON_API_URL}?key=${MOON_API_KEY}&${LOCATION}&tz=${TIMEZONE}&date=${date_param}&time=${time_param}"
+    
+    response=$(curl -sf "$url" 2>/dev/null) || return 1
+
+    # Sanity-check: ensure expected field is present
+    echo "$response" | jq -e '.moonrise' >/dev/null 2>&1 || return 1
+
+    echo "$response"
+}
+
 #######################################
 # Fetch fresh moon data from astroapi and write it to MOON_DATA_FILE.
 #
@@ -517,11 +536,8 @@ fetch_moon_data() {
     local date_param time_param url response
     date_param=$(date +"%d/%m/%Y")
     time_param=$(date +"%H:%M")
-    url="${MOON_API_URL}?key=${MOON_API_KEY}&${LOCATION}&tz=${TIMEZONE}&date=${date_param}&time=${time_param}"
-    response=$(curl -sf "$url" 2>/dev/null) || return 1
 
-    # Sanity-check: ensure expected field is present
-    echo "$response" | jq -e '.moonrise' >/dev/null 2>&1 || return 1
+	response=$(call_moon_api "$date_param" "$time_param")
     echo "$response"
 }
 
@@ -616,16 +632,15 @@ get_moon_data() {
 	# ─────────────────────────────────────────────
 	# FETCH FRESH DATA
 	# ─────────────────────────────────────────────
-	local fresh_data
+	local fresh_data=""
 
 	if (( sunrise_epoch > 0 && now < sunrise_epoch )); then
 		# Overnight → explicit date fetch
 		local time_param url response
 
 		time_param=$(date +"%H:%M")
-		url="${MOON_API_URL}?key=${MOON_API_KEY}&${LOCATION}&tz=${TIMEZONE}&date=${needed_date}&time=${time_param}"
 
-		response=$(curl -sf "$url" 2>/dev/null) || response=""
+		response=$(call_moon_api "$needed_date" "$time_param")
 
 		if [[ -n "$response" ]] && echo "$response" | jq -e '.moonrise' >/dev/null 2>&1; then
 			fresh_data="$response"
