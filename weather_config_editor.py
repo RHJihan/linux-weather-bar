@@ -95,10 +95,15 @@ DEPENDENCIES: dict[str, list[str]] = {
     "SHOW_SUNRISE_SUNSET": [
         "SUNRISE_WARNING_THRESHOLD",
         "SUNSET_WARNING_THRESHOLD",
+        "SHOW_SUNRISE_SUNSET_WITH_RAIN_FORECAST",
+        "SHOW_SUNRISE_SUNSET_DURING_RAIN"
     ],
     "SHOW_RAIN_FORECAST": [
         "RAIN_FORECAST_THRESHOLD",
         "RAIN_FORECAST_WINDOW",
+        "SHOW_SUNRISE_SUNSET_WITH_RAIN_FORECAST",
+        "SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST",
+        "MOON_PHASE_SHOW_WITH_RAIN_FORECAST",
     ],
     "MOON_PHASE_ENABLED": [
         "MOON_PHASE_WINDOW_START",
@@ -152,6 +157,12 @@ SCHEMA: list[VarSchema] = [
     VarSchema("SUNSET_WARNING_THRESHOLD",  "Sunset Warning",    VarType.INTEGER,
             "Minutes before sunset to show warning", default=30, readonly=True,
             group="Sunrise &amp; Sunset"),
+    VarSchema("SHOW_SUNRISE_SUNSET_DURING_RAIN",        "Show During Active Rain",          VarType.BOOLEAN,
+              "Show sunrise &amp; Sunset even when raining", readonly=True,
+              group="Sunrise &amp; Sunset"),
+    VarSchema("SHOW_SUNRISE_SUNSET_WITH_RAIN_FORECAST", "Show With Rain Forecast",          VarType.BOOLEAN,
+              "Show sunrise &amp; Sunset even when rain forecast", readonly=True,
+              group="Sunrise &amp; Sunset"),
 
     # ── Moonrise & Moonset ────────────────────────────────────────────────────
     VarSchema("SHOW_MOONRISE_MOONSET",                    "Show Moonrise &amp; Moonset",            VarType.BOOLEAN,
@@ -1307,4 +1318,3 @@ if __name__ == "__main__":
     import sys
     app = WeatherConfigApp()
     sys.exit(app.run(sys.argv))
-    

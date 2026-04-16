@@ -60,6 +60,8 @@ load_or_create_config
 # ─── Set Configuration Defaults (for set -u safety) ────────────────────────────
 : "${API_KEY_TYPE:=FREE}"
 : "${SHOW_SUNRISE_SUNSET:=true}"
+: "${SHOW_SUNRISE_SUNSET_DURING_RAIN:=true}"
+: "${SHOW_SUNRISE_SUNSET_WITH_RAIN_FORECAST:=true}"
 : "${MOON_PHASE_ENABLED:=false}"
 : "${MOON_PHASE_WINDOW_START:=1}"
 : "${MOON_PHASE_WINDOW_DURATION:=60}"
@@ -995,7 +997,7 @@ resolve_moon_phase() {
 		return 0
 	fi
 
-	if [[ "$has_rain_forecast" == "true" ]] && [[ "$MOON_PHASE_SHOW_WITH_RAIN_FORECAST" != "true" ]]; then
+	if [[ "$has_rain_forecast" == "true" ]] && [[ "$MOON_PHASE_SHOW_WITH_RAIN_FORECAST" != "true" ]] && [[ "$SHOW_RAIN_FORECAST" == "true" ]]; then
 		# Rain forecasted and suppression enabled — suppress moon phase
 		return 0
 	fi
@@ -1064,11 +1066,16 @@ build_weather_line() {
 	if awk -v diff="$diff" -v threshold="$FEELS_LIKE_THRESHOLD" 'BEGIN { exit !(diff > threshold) }'; then
 		local formatted_feels_like
 		formatted_feels_like=$(format_temperature "$feels_like")
-		line="               ${icon}   ${desc}   ${temp}°C (Feels ${formatted_feels_like}°C)"
+		line="               ${icon}   ${desc}   ${temp}°C  (Feels ${formatted_feels_like}°C)"
 	fi
 
 	if [[ "$SHOW_SUNRISE_SUNSET" == "true" ]]; then
-		local minutes
+		if [[ "$is_currently_raining" == "true" ]] && [[ "$SHOW_SUNRISE_SUNSET_DURING_RAIN" != "true" ]]; then
+			:
+		elif [[ "$has_rain_forecast" == "true" ]] && [[ "$SHOW_SUNRISE_SUNSET_WITH_RAIN_FORECAST" != "true" ]] && [[ "$SHOW_RAIN_FORECAST" == "true" ]]; then
+			:
+		else
+			local minutes
 
 		# Add sunrise info if within threshold
 		if [[ $sunrise_epoch -gt 0 ]]; then
@@ -1089,6 +1096,7 @@ build_weather_line() {
 				sunset_time=$(format_time "$effective_sunset_epoch")
 				line+="    Sunset: ${sunset_time^^}"
 			fi
+		fi
 		fi
 	fi
 
@@ -1120,7 +1128,7 @@ build_weather_line() {
 		# Rain suppression (reuse moon phase logic)
 		if [[ "$is_currently_raining" == "true" ]] && [[ "$SHOW_MOONRISE_MOONSET_DURING_RAIN" != "true" ]]; then
 			:
-		elif [[ "$has_rain_forecast" == "true" ]] && [[ "$SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST" != "true" ]]; then
+		elif [[ "$has_rain_forecast" == "true" ]] && [[ "$SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST" != "true" ]] && [[ "$SHOW_RAIN_FORECAST" == "true" ]]; then
 			:
 		else
 
