@@ -73,7 +73,7 @@ load_or_create_config
 : "${MOONSET_WARNING_THRESHOLD:=30}"
 : "${SHOW_MOONRISE_MOONSET_DURING_RAIN:=false}"
 : "${SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST:=false}"
-: "${SHOW_MOONSET_AFTER_SUNRISE:=false}"
+: "${SHOW_MOONRISE_MOONSET_DURING_DAYTIME:=false}"
 
 # ─── Validate Required Credentials ────────────────────────────────────────────
 if [[ -z "${MOON_API_KEY:-}" ]] && [[ "${MOON_PHASE_ENABLED}" == "true" ]]; then
@@ -500,6 +500,7 @@ moon_cache_is_fresh() {
 
 	return 1
 }
+
 
 call_moon_api() {
     local date_param="$1"
@@ -1126,9 +1127,16 @@ build_weather_line() {
 			local now
 			now=$(date +%s)
 			
+			local is_daytime=false
+			if (( now >= sunrise_epoch && now < effective_sunset_epoch )); then
+				is_daytime=true
+			fi
+
 			# Moonrise announcement
 			if (( _moonrise_epoch > 0 && now < _moonrise_epoch)); then
-				if [[ "$MOONRISE_WARNING_THRESHOLD" == "sunset" ]]; then
+				if [[ "$is_daytime" == "true" ]] && [[ "$SHOW_MOONRISE_MOONSET_DURING_DAYTIME" != "true" ]]; then
+					:
+				elif [[ "$MOONRISE_WARNING_THRESHOLD" == "sunset" ]]; then
 					# Only show moonrise if it's after sunset
 					if (( now >= effective_sunset_epoch && _moonrise_epoch > effective_sunset_epoch )); then
 						local moonrise_time
@@ -1149,7 +1157,7 @@ build_weather_line() {
 
 			# Moonset announcement
 			if (( _moonset_epoch > 0 && now < _moonset_epoch )); then
-				if [[ "$SHOW_MOONSET_AFTER_SUNRISE" == "false" ]] && (( now >= sunrise_epoch )); then
+				if [[ "$is_daytime" == "true" ]] && [[ "$SHOW_MOONRISE_MOONSET_DURING_DAYTIME" != "true" ]]; then
 					:
 				else
 					local mins_to_moonset
