@@ -5,6 +5,22 @@ A production-grade GNOME GTK4/libadwaita application for managing
 environment variables of a weather + astronomical system.
 """
 
+# GSETTINGS_SCHEMA_DIR=. python weather_config_editor.py
+
+# weather-config-editor.desktop:
+
+# [Desktop Entry]
+# Name=Weather Config Editor
+# Comment=Edit weather & astronomical configuration
+# Exec=sh -c 'GSETTINGS_SCHEMA_DIR="$HOME/.local/share/bin" python3 "$HOME/.local/share/bin/weather_config_editor.py"'
+# Icon=preferences-system
+# Terminal=false
+# Type=Application
+# Categories=Utility;
+# StartupNotify=true
+# StartupWMClass=com.weather.ConfigEditor
+
+
 from __future__ import annotations
 
 import os
