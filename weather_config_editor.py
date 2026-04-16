@@ -474,31 +474,60 @@ class IntegerRow(BaseRow):
 
 
 class FloatRow(BaseRow):
-    """Spin-button row for FLOAT variables."""
+    """Spin-button row for FLOAT variables (e.g., Rain Probability)."""
 
     def __init__(self, entry: ConfigEntry,
                  on_change: Callable[[ConfigEntry], None]) -> None:
         super().__init__(entry, on_change)
+        
+        # Adjustment for 0.0 to 1.0 range
         adj = Gtk.Adjustment(value=self._safe_float(),
                              lower=0.0, upper=1.0,
                              step_increment=0.05, page_increment=0.1)
         self._spin = Gtk.SpinButton(adjustment=adj, digits=2)
         self._spin.set_valign(Gtk.Align.CENTER)
+        
+        # 1. Handle numeric changes (mouse clicks, arrow keys, wheel)
         self._spin.connect("value-changed", self._on_value_changed)
+        
+        # 2. Handle typing changes (keystrokes)
+        # We connect to 'changed' but do NOT call .update() here to prevent cursor jumping.
+        self._spin.connect("changed", self._on_text_changed)
+        
         self.add_suffix(self._spin)
         self.set_activatable_widget(self._spin)
 
     def _safe_float(self) -> float:
         try:
             return float(self.entry.display_value)
-        except ValueError:
+        except (ValueError, TypeError):
             return 0.0
 
-    def _on_value_changed(self, widget: Gtk.SpinButton) -> None:
-        self.entry.display_value = f"{widget.get_value():.2f}"
+    def _on_text_changed(self, editable: Gtk.Editable) -> None:
+        text = editable.get_text()
+
+        # Allow intermediate states like "", ".", "0.", etc.
+        if text in ("", ".", "-", "-.", "0."):
+            return
+
+        try:
+            float(text)
+        except ValueError:
+            return  # Ignore invalid partial input
+
+        # Only update model if valid float → prevents cursor jump
+        self.entry.display_value = text
         self._notify_change()
 
+    def _on_value_changed(self, widget: Gtk.SpinButton) -> None:
+        """Fires when the numeric value changes via UI controls."""
+        val_str = f"{widget.get_value():.2f}"
+        if self.entry.display_value != val_str:
+            self.entry.display_value = val_str
+            self._notify_change()
+
     def reset(self) -> None:
+        """Reverts the widget to the current model value."""
         self._spin.set_value(self._safe_float())
 
 
@@ -1262,3 +1291,4 @@ if __name__ == "__main__":
     import sys
     app = WeatherConfigApp()
     sys.exit(app.run(sys.argv))
+    
