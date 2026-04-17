@@ -1027,6 +1027,139 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         self._group_widgets: dict[str, tuple[Adw.PreferencesGroup, list[BaseRow]]] = {}
 
+    def _build_moon_data_section(self) -> Adw.PreferencesGroup:
+        """
+        Load ~/.cache/weather/moon-data.json and display all fields
+        in a compact two-column layout. 
+        Times are 12h with uppercase AM/PM, while dates retain proper casing.
+        """
+
+        import json
+        from pathlib import Path
+        from datetime import datetime
+        from typing import Any
+        from gi.repository import Gtk, Adw
+
+        group = Adw.PreferencesGroup()
+        group.set_title("Moon Data")
+        group.set_description("Current lunar phase and visibility details from ~/.cache/weather/moon-data.json")
+        group.set_margin_top(4)
+
+        moon_path = Path.home() / ".cache" / "weather" / "moon-data.json"
+
+        FIELD_LABELS: dict[str, str] = {
+            "date": "Date",
+            "illumination": "Illumination",
+            "moonrise": "Moonrise",
+            "phase": "Phase",
+            "moonset": "Moonset",
+            "retrieved_at": "Retrieved",
+        }
+
+        def _parse_dt(value: str) -> datetime | None:
+            """Parses ISO format or HH:MM format."""
+            value = value.strip()
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except Exception:
+                pass
+            
+            try:
+                return datetime.strptime(value, "%H:%M")
+            except Exception:
+                return None
+
+        def _format_value(key: str, value: Any) -> str:
+            if value is None:
+                return "—"
+            text = str(value).strip()
+
+            # Date formatting: 17 April 2026 (Month is naturally Title Case)
+            if key == "date":
+                try:
+                    d, m, y = text.split("/")
+                    dt = datetime(int(y), int(m), int(d))
+                    return f"{dt.day} {dt.strftime('%B %Y')}"
+                except Exception:
+                    return text
+
+            # Time formatting: 05:04 PM (Only AM/PM forced to uppercase)
+            if key in ("moonrise", "moonset"):
+                dt = _parse_dt(text)
+                if dt:
+                    time_str = dt.strftime("%I:%M %p")
+                    # Split to capitalize only the suffix
+                    parts = time_str.split(" ")
+                    return f"{parts[0]} {parts[1].upper()}"
+                return text
+
+            # Timestamp formatting: 17 April 2026 02:12 PM
+            if key == "retrieved_at":
+                dt = _parse_dt(text)
+                if dt:
+                    # Format time and date separately to protect month casing
+                    date_part = f"{dt.day} {dt.strftime('%B %Y')}"
+                    time_part = dt.strftime("%I:%M %p").upper()
+                    return f"{date_part} {time_part}"
+                return text
+
+            return text
+
+        main_row = Adw.ActionRow()
+        main_row.set_activatable(False)
+
+        try:
+            data: dict[str, Any] = json.loads(moon_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            main_row.set_title("Moon data unavailable")
+            main_row.set_subtitle(str(exc))
+            group.add(main_row)
+            return group
+
+        outer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        outer_box.set_hexpand(True)
+        outer_box.set_margin_start(16)
+        outer_box.set_margin_end(16)
+        outer_box.set_margin_top(12)
+        outer_box.set_margin_bottom(12)
+
+        left_grid = Gtk.Grid(column_spacing=12, row_spacing=8)
+        right_grid = Gtk.Grid(column_spacing=12, row_spacing=8)
+
+        for grid in (left_grid, right_grid):
+            grid.set_hexpand(True)
+            grid.set_halign(Gtk.Align.FILL)
+
+        fields = list(FIELD_LABELS.items())
+        for i, (key, label) in enumerate(fields):
+            target = left_grid if i % 2 == 0 else right_grid
+            row_idx = i // 2
+
+            lbl = Gtk.Label(label=f"{label}:")
+            lbl.set_halign(Gtk.Align.START)
+            lbl.add_css_class("dim-label")
+
+            val = Gtk.Label(label=_format_value(key, data.get(key)))
+            val.set_halign(Gtk.Align.END)
+            val.set_hexpand(True)
+            val.set_selectable(False) 
+
+            target.attach(lbl, 0, row_idx, 1, 1)
+            target.attach(val, 1, row_idx, 1, 1)
+
+        sep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        sep.set_margin_start(24)
+        sep.set_margin_end(24)
+
+        outer_box.append(left_grid)
+        outer_box.append(sep)
+        outer_box.append(right_grid)
+
+        main_row.set_child(outer_box)
+        group.add(main_row)
+
+        return group
+
     def _build_preferences(self) -> None:
         """Rebuild preference groups from loaded entries."""
 
@@ -1068,6 +1201,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             if rows:
                 self._groups_box.append(group)
                 self._group_widgets[group_name] = (group, rows)
+
+            # Inject Moon Data section immediately after Moon Phase group
+            if group_name == "Moon Phase":
+                self._groups_box.append(self._build_moon_data_section())
 
         # ── Apply dependency states AFTER UI is built ──────────────────────
         for master_key, dependent_keys in DEPENDENCIES.items():
