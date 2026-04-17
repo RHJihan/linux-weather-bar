@@ -320,6 +320,71 @@ class IpMappingStore:
         entries.sort(key=lambda e: e.name.upper())
         return entries
 
+
+# ─── Timezone Store ───────────────────────────────────────────────────────────
+
+
+class TimezoneStore:
+    """
+    Loads zone.tab from the script directory and parses IANA timezone identifiers.
+    Falls back gracefully — if the file is absent or malformed, returns an empty list.
+
+    zone.tab format (tab-separated):
+        col 0: ISO 3166 country code(s)
+        col 1: coordinates
+        col 2: TZ identifier  ← what we want  (e.g. America/New_York)
+        col 3: optional comment
+    Lines beginning with '#' are comments and are skipped.
+    """
+
+    ZONE_TAB_FILENAME = "zone.tab"
+
+    def __init__(self) -> None:
+        self._timezones: list[str] = []
+        self._loaded = False
+
+    def find_zone_tab(self) -> Optional[Path]:
+        """Look for zone.tab next to the script (same discovery pattern as ip_mappings.csv)."""
+        candidate = Path(__file__).resolve().parent / self.ZONE_TAB_FILENAME
+        return candidate if candidate.exists() else None
+
+    def load(self) -> list[str]:
+        """
+        Parse zone.tab and return a sorted list of TZ identifiers (3rd column).
+        Result is cached after the first call.
+        Returns [] if file not found or entirely unreadable.
+        """
+        if self._loaded:
+            return self._timezones
+
+        self._loaded = True
+        path = self.find_zone_tab()
+        if not path:
+            return self._timezones
+
+        try:
+            tzs: list[str] = []
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 3:
+                    tz = parts[2].strip()
+                    if tz:
+                        tzs.append(tz)
+            self._timezones = sorted(set(tzs))
+        except Exception:
+            # Malformed or unreadable — degrade silently to plain StringRow
+            self._timezones = []
+
+        return self._timezones
+
+    def available(self) -> bool:
+        """True if zone.tab was found and yielded at least one entry."""
+        return bool(self.load())
+
+
 # ─── Config File I/O ─────────────────────────────────────────────────────────
 
 
@@ -395,6 +460,11 @@ class Validator:
         elif vt == VarType.BOOLEAN:
             if val.lower() not in ("true", "false"):
                 return "Must be true or false"
+        elif vt == VarType.STRING and schema.key == "TIMEZONE":
+            # Only validate against zone.tab when it was successfully loaded.
+            tzs = TimezoneStore().load()
+            if tzs and val not in tzs:
+                return "Not a recognised IANA timezone. Check zone.tab for valid values."
         elif vt == VarType.ENUM:
             if val not in schema.choices:
                 return f"Must be one of: {', '.join(schema.choices)}"
@@ -785,6 +855,132 @@ class LocationRow(BaseRow):
         self._sync_initial_state(lat, lon)
 
 
+# ─── Timezone Row ─────────────────────────────────────────────────────────────
+
+
+class TimezoneRow(BaseRow):
+    """
+    TIMEZONE row — searchable combobox when zone.tab is present,
+    plain text entry (original StringRow behaviour) when it is not.
+
+    Combobox mode:
+    - Typing filters suggestions via GtkEntryCompletion (inline + popup).
+    - Selecting from the list sets the value immediately.
+    - An 'error' CSS class is applied to the entry when the typed text is not
+      in the timezone list, giving the user live visual feedback.
+    - On save, Validator.validate() performs a hard check against the list.
+
+    Fallback mode (no zone.tab):
+    - Behaves identically to StringRow; no functionality is changed.
+    """
+
+    def __init__(self, entry: ConfigEntry,
+                 on_change: Callable[[ConfigEntry], None],
+                 tz_store: "TimezoneStore") -> None:
+        super().__init__(entry, on_change)
+
+        self._tz_store = tz_store
+        self._all_timezones: list[str] = tz_store.load()
+
+        if not self._all_timezones:
+            # ── Fallback: plain text entry (original behaviour) ───────────────
+            self._entry: Optional[Gtk.Entry] = Gtk.Entry()
+            self._entry.set_text(entry.display_value)
+            self._entry.set_valign(Gtk.Align.CENTER)
+            self._entry.set_hexpand(True)
+            self._entry.connect("changed", self._on_plain_changed)
+            self.add_suffix(self._entry)
+            self.set_activatable_widget(self._entry)
+            self._combo: Optional[Gtk.ComboBoxText] = None
+            return
+
+        # ── Combobox with inline search ───────────────────────────────────────
+        self._combo = Gtk.ComboBoxText.new_with_entry()
+        self._combo.set_hexpand(True)
+        self._combo.set_valign(Gtk.Align.CENTER)
+
+        for tz in self._all_timezones:
+            self._combo.append_text(tz)
+
+        # Populate the entry portion with the current saved value
+        combo_entry: Gtk.Entry = self._combo.get_child()
+        combo_entry.set_text(entry.display_value)
+        combo_entry.set_placeholder_text("e.g. Asia/Dhaka")
+
+        # Attach GtkEntryCompletion for real-time suggestions
+        completion = Gtk.EntryCompletion()
+        tz_model = Gtk.ListStore(str)
+        for tz in self._all_timezones:
+            tz_model.append([tz])
+        completion.set_model(tz_model)
+        completion.set_text_column(0)
+        completion.set_minimum_key_length(1)
+        completion.set_inline_completion(True)   # auto-complete the entry text
+        completion.set_popup_completion(True)    # also show a suggestion popup
+        combo_entry.set_completion(completion)
+
+        # "changed" fires on every keystroke in the entry portion
+        combo_entry.connect("changed", self._on_combo_changed)
+        # "changed" on the ComboBoxText fires when the user picks a list item
+        self._combo.connect("changed", self._on_combo_selected)
+
+        self.add_suffix(self._combo)
+        self.set_activatable_widget(combo_entry)
+        self._entry = None  # not used in combobox mode
+
+    # ── Signal handlers ───────────────────────────────────────────────────────
+
+    def _on_plain_changed(self, widget: Gtk.Entry) -> None:
+        """Fallback plain-entry handler — mirrors StringRow exactly."""
+        self.entry.display_value = widget.get_text()
+        self._notify_change()
+
+    def _on_combo_changed(self, widget: Gtk.Entry) -> None:
+        """
+        Fires on every keystroke inside the combo entry.
+        Updates the model and applies an 'error' CSS class for invalid values
+        so the user gets immediate visual feedback while typing.
+        """
+        text = widget.get_text().strip()
+        is_valid = text in self._all_timezones
+
+        if text and not is_valid:
+            widget.add_css_class("error")
+        else:
+            widget.remove_css_class("error")
+
+        # Always write through so intermediate typing is preserved in the model
+        self.entry.display_value = text
+        self._notify_change()
+
+    def _on_combo_selected(self, widget: Gtk.ComboBoxText) -> None:
+        """
+        Fires when the user selects an item from the dropdown list.
+        Guaranteed to be a valid timezone, so clear any error styling.
+        """
+        text = widget.get_active_text()
+        if text:
+            combo_entry: Gtk.Entry = widget.get_child()
+            combo_entry.remove_css_class("error")
+            self.entry.display_value = text
+            self._notify_change()
+
+    # ── BaseRow interface ─────────────────────────────────────────────────────
+
+    def reset(self) -> None:
+        val = self.entry.display_value
+        if self._combo is not None:
+            combo_entry: Gtk.Entry = self._combo.get_child()
+            combo_entry.set_text(val)
+            # Reapply error styling to match the restored value
+            if val and val not in self._all_timezones:
+                combo_entry.add_css_class("error")
+            else:
+                combo_entry.remove_css_class("error")
+        elif self._entry is not None:
+            self._entry.set_text(val)
+
+
 class MoonWindowRow(BaseRow):
     """
     Special row for MOON_WINDOW variables.
@@ -858,11 +1054,14 @@ class MoonWindowRow(BaseRow):
 
 def make_row(entry: ConfigEntry,
              on_change: Callable[[ConfigEntry], None],
-             ip_store: Optional["IpMappingStore"] = None) -> BaseRow:
+             ip_store: Optional["IpMappingStore"] = None,
+             tz_store: Optional["TimezoneStore"] = None) -> BaseRow:
 
     if entry.schema.key == "LOCATION":
         return LocationRow(entry, on_change, ip_store or IpMappingStore(None))
 
+    if entry.schema.key == "TIMEZONE":
+        return TimezoneRow(entry, on_change, tz_store or TimezoneStore())
 
     vt = entry.schema.var_type
 
@@ -1189,7 +1388,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 # Create row widget
                 app = self.get_application()
                 ip_store = getattr(app, "ip_store", None)
-                row = make_row(entry, self._on_entry_changed, ip_store)
+                tz_store = getattr(app, "tz_store", None)
+                row = make_row(entry, self._on_entry_changed, ip_store, tz_store)
 
                 # Add to group
                 group.add(row)
@@ -1403,7 +1603,8 @@ class WeatherConfigApp(Adw.Application):
         except Exception:
             self.settings = None
         
-        self.ip_store = IpMappingStore(self.settings) 
+        self.ip_store = IpMappingStore(self.settings)
+        self.tz_store = TimezoneStore()   # loaded lazily on first row construction
 
     def _on_activate(self, app: Adw.Application) -> None:
         win = WeatherConfigWindow(app)
