@@ -504,6 +504,38 @@ moon_cache_is_fresh() {
 }
 
 
+# -----------------------------------------------------------------------------
+# call_moon_api
+#
+# Purpose:
+#   Calls the configured Moon API endpoint and returns validated JSON output.
+#
+# Inputs:
+#   $1 - date_param (required)
+#   $2 - time_param (required)
+#
+# Behavior:
+#   - Builds a request URL using:
+#       MOON_API_URL, MOON_API_KEY, LOCATION, TIMEZONE
+#   - Sends a GET request via curl
+#   - Ensures request succeeds (non-zero exit → failure)
+#   - Validates that response contains expected field: ".moonrise"
+#   - Adds an additional field:
+#       retrieved_at → current system date-time (ISO-8601 format)
+#   - Returns the modified JSON response
+#
+# Output:
+#   JSON response from API with an added field:
+#     {
+#       ... original fields ...,
+#       "retrieved_at": "2026-04-17T14:00:00+06:00"
+#     }
+#
+# Failure cases:
+#   - Missing input parameters → return 1
+#   - curl failure → return 1
+#   - invalid or unexpected JSON → return 1
+# -----------------------------------------------------------------------------
 call_moon_api() {
     local date_param="$1"
     local time_param="$2"
@@ -519,6 +551,9 @@ call_moon_api() {
 
     # Sanity-check: ensure expected field is present
     echo "$response" | jq -e '.moonrise' >/dev/null 2>&1 || return 1
+
+    # Add fetch timestamp (ISO 8601 format with timezone)
+    response=$(echo "$response" | jq --arg ts "$(date -Iseconds)" '. + {retrieved_at: $ts}')
 
     echo "$response"
 }
