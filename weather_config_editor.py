@@ -23,11 +23,16 @@ environment variables of a weather + astronomical system.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import threading
+import urllib.request
+import urllib.error
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -1118,6 +1123,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._search_text: str = ""
         self._undo_stack: list[tuple[str, str]] = []   # (key, old_raw_value)
         self._original_values: dict[str, str] = {}     # key → raw_value at load time
+        self._moon_value_labels: dict[str, Gtk.Label] = {}  # for in-place Moon Data refresh
+        self._moon_data_group: Optional[Adw.PreferencesGroup] = None
 
         self._build_ui()
 
@@ -1226,86 +1233,169 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         self._group_widgets: dict[str, tuple[Adw.PreferencesGroup, list[BaseRow]]] = {}
 
+    # ── Moon Data helpers ─────────────────────────────────────────────────────
+
+    _MOON_FIELD_LABELS: dict[str, str] = {
+        "date": "Date",
+        "illumination": "Illumination",
+        "moonrise": "Moonrise",
+        "phase": "Phase",
+        "moonset": "Moonset",
+        "retrieved_at": "Retrieved",
+    }
+
+    @staticmethod
+    def _parse_moon_dt(value: str) -> Optional[datetime]:
+        value = value.strip()
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            pass
+        try:
+            return datetime.strptime(value, "%H:%M")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _format_moon_value(key: str, value: Any) -> str:
+        if value is None:
+            return "—"
+        text = str(value).strip()
+        if key == "date":
+            try:
+                d, m, y = text.split("/")
+                dt = datetime(int(y), int(m), int(d))
+                return f"{dt.day} {dt.strftime('%B %Y')}"
+            except Exception:
+                return text
+        if key in ("moonrise", "moonset"):
+            dt = WeatherConfigWindow._parse_moon_dt(text)
+            if dt:
+                parts = dt.strftime("%I:%M %p").split(" ")
+                return f"{parts[0]} {parts[1].upper()}"
+            return text
+        if key == "retrieved_at":
+            dt = WeatherConfigWindow._parse_moon_dt(text)
+            if dt:
+                date_part = f"{dt.day} {dt.strftime('%B %Y')}"
+                time_part = dt.strftime("%I:%M %p").lstrip("0")
+                return f"{date_part} {time_part.upper()}"
+            return text
+        return text
+
+    def _call_moon_api(self) -> dict[str, Any]:
+        """Fetch moon data from astroapi.byhrast.com using values from the loaded config."""
+        def _get(key: str) -> str:
+            entry = self._entries.get(key)
+            if not entry:
+                raise ValueError(f"Config key '{key}' not loaded")
+            val = entry.display_value.strip()
+            if not val:
+                raise ValueError(f"Config key '{key}' is empty")
+            return val
+
+        api_key      = _get("MOON_API_KEY")
+        location     = _get("LOCATION")
+        timezone_val = _get("TIMEZONE")
+
+        now        = datetime.now()
+        date_param = now.strftime("%d/%m/%Y")
+        time_param = now.strftime("%H:%M")
+
+        url = (
+            f"https://astroapi.byhrast.com/moon.php"
+            f"?key={api_key}&{location}&tz={timezone_val}"
+            f"&date={date_param}&time={time_param}"
+        )
+
+        req = urllib.request.Request(url)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = resp.read().decode("utf-8")
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Network error: {exc.reason}") from exc
+
+        data = json.loads(raw)
+
+        if "moonrise" not in data:
+            raise RuntimeError("Unexpected response: 'moonrise' field missing")
+
+        data["retrieved_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        return data
+
+    def _on_moon_update_clicked(self, btn: Gtk.Button) -> None:
+        if not self._entries:
+            self._show_error("No config file loaded. Please open a config file first.")
+            return
+
+        btn.set_sensitive(False)
+        btn.set_label("Updating…")
+
+        def _worker() -> None:
+            try:
+                data = self._call_moon_api()
+                moon_path = Path.home() / ".cache" / "weather" / "moon-data.json"
+                moon_path.parent.mkdir(parents=True, exist_ok=True)
+                moon_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                GLib.idle_add(_on_success, data)
+            except Exception as exc:
+                GLib.idle_add(_on_error, str(exc))
+
+        def _on_success(data: dict[str, Any]) -> bool:
+            btn.set_label("Update")
+            btn.set_sensitive(True)
+            if self._moon_value_labels:
+                # Section was built successfully before — just update labels in-place
+                self._refresh_moon_data_values(data)
+            else:
+                # Section was in error state — rebuild and swap it in
+                new_group = self._build_moon_data_section()
+                if self._moon_data_group and self._moon_data_group.get_parent():
+                    self._groups_box.insert_child_after(new_group, self._moon_data_group)
+                    self._groups_box.remove(self._moon_data_group)
+                self._moon_data_group = new_group
+            self._show_toast("Moon data updated successfully")
+            return False
+
+        def _on_error(msg: str) -> bool:
+            btn.set_label("Update")
+            btn.set_sensitive(True)
+            self._show_error(f"Moon API call failed:\n{msg}")
+            return False
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _refresh_moon_data_values(self, data: dict[str, Any]) -> None:
+        """Update the Moon Data value labels in-place without rebuilding the whole UI."""
+        for key, val_label in self._moon_value_labels.items():
+            val_label.set_label(self._format_moon_value(key, data.get(key)))
+
     def _build_moon_data_section(self) -> Adw.PreferencesGroup:
         """
         Load ~/.cache/weather/moon-data.json and display all fields
-        in a compact two-column layout. 
+        in a compact two-column layout.
         Times are 12h with uppercase AM/PM, while dates retain proper casing.
         """
-
-        import json
-        from pathlib import Path
-        from datetime import datetime
-        from typing import Any
-        from gi.repository import Gtk, Adw
-
         group = Adw.PreferencesGroup()
         group.set_title("Moon Data")
-        group.set_description("Current lunar phase and visibility details from ~/.cache/weather/moon-data.json")
+        group.set_description("Current lunar phase and visibility details")
         group.set_margin_top(4)
+
+        # ── Update button in group header ─────────────────────────────────────
+        update_btn = Gtk.Button(label="Update")
+        update_btn.add_css_class("flat")
+        update_btn.set_valign(Gtk.Align.CENTER)
+        update_btn.set_tooltip_text("Fetch latest moon data from the API and save to moon-data.json")
+        update_btn.connect("clicked", self._on_moon_update_clicked)
+        group.set_header_suffix(update_btn)
 
         moon_path = Path.home() / ".cache" / "weather" / "moon-data.json"
 
-        FIELD_LABELS: dict[str, str] = {
-            "date": "Date",
-            "illumination": "Illumination",
-            "moonrise": "Moonrise",
-            "phase": "Phase",
-            "moonset": "Moonset",
-            "retrieved_at": "Retrieved",
-        }
-
-        def _parse_dt(value: str) -> datetime | None:
-            """Parses ISO format or HH:MM format."""
-            value = value.strip()
-            try:
-                return datetime.fromisoformat(value.replace("Z", "+00:00"))
-            except Exception:
-                pass
-            
-            try:
-                return datetime.strptime(value, "%H:%M")
-            except Exception:
-                return None
-
-        def _format_value(key: str, value: Any) -> str:
-            if value is None:
-                return "—"
-            text = str(value).strip()
-
-            # Date formatting: 17 April 2026 (Month is naturally Title Case)
-            if key == "date":
-                try:
-                    d, m, y = text.split("/")
-                    dt = datetime(int(y), int(m), int(d))
-                    return f"{dt.day} {dt.strftime('%B %Y')}"
-                except Exception:
-                    return text
-
-            # Time formatting: 05:04 PM (Only AM/PM forced to uppercase)
-            if key in ("moonrise", "moonset"):
-                dt = _parse_dt(text)
-                if dt:
-                    time_str = dt.strftime("%I:%M %p")
-                    # Split to capitalize only the suffix
-                    parts = time_str.split(" ")
-                    return f"{parts[0]} {parts[1].upper()}"
-                return text
-
-            # Timestamp formatting: 17 April 2026 02:12 PM
-            if key == "retrieved_at":
-                dt = _parse_dt(text)
-                if dt:
-                    # Format time and date separately to protect month casing
-                    date_part = f"{dt.day} {dt.strftime('%B %Y')}"
-                    time_part = dt.strftime("%I:%M %p").upper()
-                    return f"{date_part} {time_part}"
-                return text
-
-            return text
-
         main_row = Adw.ActionRow()
         main_row.set_activatable(False)
+
+        # Keep a reference so we can refresh values without rebuilding
+        self._moon_value_labels: dict[str, Gtk.Label] = {}
 
         try:
             data: dict[str, Any] = json.loads(moon_path.read_text(encoding="utf-8"))
@@ -1329,7 +1419,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             grid.set_hexpand(True)
             grid.set_halign(Gtk.Align.FILL)
 
-        fields = list(FIELD_LABELS.items())
+        fields = list(self._MOON_FIELD_LABELS.items())
         for i, (key, label) in enumerate(fields):
             target = left_grid if i % 2 == 0 else right_grid
             row_idx = i // 2
@@ -1338,10 +1428,13 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             lbl.set_halign(Gtk.Align.START)
             lbl.add_css_class("dim-label")
 
-            val = Gtk.Label(label=_format_value(key, data.get(key)))
+            val = Gtk.Label(label=self._format_moon_value(key, data.get(key)))
             val.set_halign(Gtk.Align.END)
             val.set_hexpand(True)
-            val.set_selectable(False) 
+            val.set_selectable(False)
+
+            # Store reference for in-place refresh
+            self._moon_value_labels[key] = val
 
             target.attach(lbl, 0, row_idx, 1, 1)
             target.attach(val, 1, row_idx, 1, 1)
@@ -1404,7 +1497,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
             # Inject Moon Data section immediately after Moon Phase group
             if group_name == "Moon Phase":
-                self._groups_box.append(self._build_moon_data_section())
+                self._moon_data_group = self._build_moon_data_section()
+                self._groups_box.append(self._moon_data_group)
 
         # ── Apply dependency states AFTER UI is built ──────────────────────
         for master_key, dependent_keys in DEPENDENCIES.items():
