@@ -1009,39 +1009,54 @@ class TimezoneRow(BaseRow):
     def _on_search_changed(self, search_entry: Gtk.SearchEntry) -> None:
         """
         Fires on every keystroke inside the DropDown's search box.
-        Drives the StringFilter and applies error CSS for invalid text.
+        ONLY drives the StringFilter and live error styling.
+        Never writes to entry.display_value — that is _on_dropdown_selected's job.
         """
         text = search_entry.get_text().strip()
-        # Update the filter so the popup list narrows in real time
+        # Drive the filter so the popup list narrows in real time
         self._filter.set_search(text)
+        # Show error styling while the user is mid-search; clear when empty or exact match
         is_valid = not text or text in self._all_timezones
         if not is_valid:
             search_entry.add_css_class("error")
         else:
             search_entry.remove_css_class("error")
-        # Write through to the model
-        self.entry.display_value = text
-        self._notify_change()
+        # Do NOT write to entry.display_value here.
+        # Partial search text (e.g. "asia/dha") must never become the saved value.
 
     def _on_dropdown_selected(self, dropdown: Gtk.DropDown,
                               _param: object) -> None:
         """
-        Fires when the user picks an item from the dropdown list.
-        Always a valid timezone — clear any error styling.
+        Fires when the user picks an item from the dropdown list (or on initial
+        programmatic selection). get_selected_item() always returns the correct
+        StringObject from the filtered model — we just read its string directly.
         """
         obj = dropdown.get_selected_item()
         if obj is None:
             return
         text: str = obj.get_string()
+        if not text:
+            return
         if self._search_entry:
             self._search_entry.remove_css_class("error")
         self.entry.display_value = text
         self._notify_change()
 
     def _select_timezone(self, tz: str) -> None:
-        """Set the DropDown's selected item to match *tz* (exact match)."""
+        """Set the DropDown's selected item to match *tz* (exact match).
+        Must clear the filter first so indices in the unfiltered StringList
+        align with what the DropDown's model sees.
+        """
         if not tz or self._string_list is None or self._dropdown is None:
             return
+        # Clear any active search filter so the full list is visible and
+        # indices in _string_list match the DropDown's model positions.
+        if self._filter is not None:
+            self._filter.set_search("")
+        if self._search_entry is not None:
+            self._search_entry.handler_block_by_func(self._on_search_changed)
+            self._search_entry.set_text("")
+            self._search_entry.handler_unblock_by_func(self._on_search_changed)
         n = self._string_list.get_n_items()
         for i in range(n):
             item = self._string_list.get_item(i)
