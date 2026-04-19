@@ -33,6 +33,7 @@ import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -117,6 +118,11 @@ DEPENDENCIES: dict[str, list[str]] = {
         "MOON_PHASE_SHOW_WITH_RAIN_FORECAST",
         "SHOW_MOONPHASE_BENGALI",
         "SHOW_MOONPHASE_BILINGUAL",
+        "SHOW_LUNAR_APSIDAL_SYZYGY",
+        "ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY",
+    ],
+    "SHOW_LUNAR_APSIDAL_SYZYGY": [
+        "ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY",
     ],
     "SHOW_MOONRISE_MOONSET": [
         "MOONRISE_WARNING_THRESHOLD",
@@ -193,6 +199,9 @@ SCHEMA: list[VarSchema] = [
     # ── Moon Phase ────────────────────────────────────────────────────────────
     VarSchema("MOON_PHASE_ENABLED",               "Moon Phase",                    VarType.BOOLEAN,
               "Show the current moon phase", readonly=True, group="Moon Phase"),
+    VarSchema("LUNAR_CACHE_MAX_AGE_HOURS",                "Lunar Cache Max Age",              VarType.INTEGER,
+              "Maximum age of cached lunar data in hours", default=2, readonly=True,
+              group="Moon Phase"),
     VarSchema("MOON_PHASE_WINDOW_START",           "Display Window Start",         VarType.MOON_WINDOW,
               "Minutes after sunset to begin display, or from moonrise",
               sentinel_label="Moonrise", sentinel_value="moonrise",
@@ -204,6 +213,9 @@ SCHEMA: list[VarSchema] = [
     VarSchema("SHOW_MOONPHASE_DURING_DAYTIME",       "Show During Daytime",        VarType.BOOLEAN,
               "Display moon phase regardless of daylight hours", readonly=True,
               group="Moon Phase"),
+    VarSchema("SUPPRESS_MOONPHASE_NOT_VISIBLE", "Suppress Non-Visible Moon Phases", VarType.BOOLEAN,
+          "Suppress moon phase display when the moon is too dim to be visible", 
+          readonly=True, group="Moon Phase"),
     VarSchema("MOON_PHASE_SHOW_DURING_RAIN",       "Show While Raining",           VarType.BOOLEAN,
               "Display even when it's currently raining", readonly=True,
               group="Moon Phase"),
@@ -215,6 +227,12 @@ SCHEMA: list[VarSchema] = [
               group="Moon Phase"),
     VarSchema("SHOW_MOONPHASE_BENGALI",             "Bengali Phase Name",          VarType.BOOLEAN,
               "Show phase name in Bengali only", readonly=True, group="Moon Phase"),
+    VarSchema("SHOW_LUNAR_APSIDAL_SYZYGY",             "Apsidal Syzygy Label",          VarType.BOOLEAN,
+          "Append supermoon, super new moon, or micromoon label to phase name when applicable",
+          readonly=True, group="Moon Phase"),
+    VarSchema("ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY", "Night-Only Syzygy Label", VarType.BOOLEAN,
+          "Only show supermoon/micromoon if the moon is visible at night", 
+          readonly=True, group="Moon Phase"),
 
     # ── API Keys ──────────────────────────────────────────────────────────────
     VarSchema("API_KEY",       "OpenWeatherMap API Key",              VarType.STRING,
@@ -869,7 +887,7 @@ class TimezoneRow(BaseRow):
     plain text entry (original StringRow behaviour) when it is not.
 
     Combobox mode:
-    - Typing filters suggestions via GtkEntryCompletion (inline + popup).
+    - Typing filters suggestions via a GTK4-native Popover + ListView.
     - Selecting from the list sets the value immediately.
     - An 'error' CSS class is applied to the entry when the typed text is not
       in the timezone list, giving the user live visual feedback.
@@ -896,41 +914,52 @@ class TimezoneRow(BaseRow):
             self._entry.connect("changed", self._on_plain_changed)
             self.add_suffix(self._entry)
             self.set_activatable_widget(self._entry)
-            self._combo: Optional[Gtk.ComboBoxText] = None
+            self._combo = None
+            self._tz_entry: Optional[Gtk.Entry] = None
             return
 
-        # ── Combobox with inline search ───────────────────────────────────────
-        self._combo = Gtk.ComboBoxText.new_with_entry()
-        self._combo.set_hexpand(True)
-        self._combo.set_valign(Gtk.Align.CENTER)
+        # ── GTK4-native: Entry + Popover suggestion list ──────────────────────
+        self._combo = None  # not used
 
-        for tz in self._all_timezones:
-            self._combo.append_text(tz)
+        # Outer box so Entry and a small drop-button sit side by side
+        self._tz_entry = Gtk.Entry()
+        self._tz_entry.set_hexpand(True)
+        self._tz_entry.set_valign(Gtk.Align.CENTER)
+        self._tz_entry.set_text(entry.display_value)
+        self._tz_entry.set_placeholder_text("e.g. Asia/Dhaka")
 
-        # Populate the entry portion with the current saved value
-        combo_entry: Gtk.Entry = self._combo.get_child()
-        combo_entry.set_text(entry.display_value)
-        combo_entry.set_placeholder_text("e.g. Asia/Dhaka")
+        # Popover that shows filtered suggestions
+        self._popover = Gtk.Popover()
+        self._popover.set_autohide(True)
+        self._popover.set_has_arrow(False)
+        self._popover.set_position(Gtk.PositionType.BOTTOM)
 
-        # Attach GtkEntryCompletion for real-time suggestions
-        completion = Gtk.EntryCompletion()
-        tz_model = Gtk.ListStore(str)
-        for tz in self._all_timezones:
-            tz_model.append([tz])
-        completion.set_model(tz_model)
-        completion.set_text_column(0)
-        completion.set_minimum_key_length(1)
-        completion.set_inline_completion(True)   # auto-complete the entry text
-        completion.set_popup_completion(True)    # also show a suggestion popup
-        combo_entry.set_completion(completion)
+        # StringList + SingleSelection + ListView inside a ScrolledWindow
+        self._tz_strings = Gtk.StringList.new(self._all_timezones)
+        self._tz_selection = Gtk.SingleSelection.new(self._tz_strings)
+        self._tz_selection.set_autoselect(False)
 
-        # "changed" fires on every keystroke in the entry portion
-        combo_entry.connect("changed", self._on_combo_changed)
-        # "changed" on the ComboBoxText fires when the user picks a list item
-        self._combo.connect("changed", self._on_combo_selected)
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self._on_factory_setup)
+        factory.connect("bind",  self._on_factory_bind)
 
-        self.add_suffix(self._combo)
-        self.set_activatable_widget(combo_entry)
+        self._list_view = Gtk.ListView.new(self._tz_selection, factory)
+        self._list_view.set_single_click_activate(True)
+        self._list_view.connect("activate", self._on_list_activate)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_max_content_height(220)
+        scroll.set_propagate_natural_height(True)
+        scroll.set_child(self._list_view)
+
+        self._popover.set_child(scroll)
+        self._popover.set_parent(self._tz_entry)
+
+        self._tz_entry.connect("changed", self._on_combo_changed)
+
+        self.add_suffix(self._tz_entry)
+        self.set_activatable_widget(self._tz_entry)
         self._entry = None  # not used in combobox mode
 
     # ── Signal handlers ───────────────────────────────────────────────────────
@@ -940,11 +969,39 @@ class TimezoneRow(BaseRow):
         self.entry.display_value = widget.get_text()
         self._notify_change()
 
+    # ── ListView factory callbacks ────────────────────────────────────────────
+
+    def _on_factory_setup(self, _factory: Gtk.SignalListItemFactory,
+                          item: Gtk.ListItem) -> None:
+        item.set_child(Gtk.Label(halign=Gtk.Align.START, margin_start=6,
+                                 margin_end=6, margin_top=2, margin_bottom=2))
+
+    def _on_factory_bind(self, _factory: Gtk.SignalListItemFactory,
+                         item: Gtk.ListItem) -> None:
+        label: Gtk.Label = item.get_child()
+        obj = item.get_item()
+        label.set_text(obj.get_string() if obj else "")
+
+    def _on_list_activate(self, _list_view: Gtk.ListView, pos: int) -> None:
+        """User clicked a suggestion — accept it."""
+        obj = self._tz_strings.get_item(pos)
+        if obj is None:
+            return
+        text = obj.get_string()
+        # Temporarily block _on_combo_changed to avoid double-notify
+        self._tz_entry.handler_block_by_func(self._on_combo_changed)
+        self._tz_entry.set_text(text)
+        self._tz_entry.remove_css_class("error")
+        self._tz_entry.handler_unblock_by_func(self._on_combo_changed)
+        self._popover.popdown()
+        self.entry.display_value = text
+        self._notify_change()
+
     def _on_combo_changed(self, widget: Gtk.Entry) -> None:
         """
-        Fires on every keystroke inside the combo entry.
-        Updates the model and applies an 'error' CSS class for invalid values
-        so the user gets immediate visual feedback while typing.
+        Fires on every keystroke inside the entry.
+        Filters the suggestion popover and applies an 'error' CSS class
+        for invalid values so the user gets immediate visual feedback.
         """
         text = widget.get_text().strip()
         is_valid = text in self._all_timezones
@@ -954,34 +1011,32 @@ class TimezoneRow(BaseRow):
         else:
             widget.remove_css_class("error")
 
+        # Rebuild the StringList with only matching timezones
+        filtered = [tz for tz in self._all_timezones
+                    if text.lower() in tz.lower()] if text else []
+        self._tz_strings.splice(0, self._tz_strings.get_n_items(), filtered)
+
+        if filtered and text and not is_valid:
+            self._popover.popup()
+        else:
+            self._popover.popdown()
+
         # Always write through so intermediate typing is preserved in the model
         self.entry.display_value = text
         self._notify_change()
-
-    def _on_combo_selected(self, widget: Gtk.ComboBoxText) -> None:
-        """
-        Fires when the user selects an item from the dropdown list.
-        Guaranteed to be a valid timezone, so clear any error styling.
-        """
-        text = widget.get_active_text()
-        if text:
-            combo_entry: Gtk.Entry = widget.get_child()
-            combo_entry.remove_css_class("error")
-            self.entry.display_value = text
-            self._notify_change()
 
     # ── BaseRow interface ─────────────────────────────────────────────────────
 
     def reset(self) -> None:
         val = self.entry.display_value
-        if self._combo is not None:
-            combo_entry: Gtk.Entry = self._combo.get_child()
-            combo_entry.set_text(val)
+        if self._tz_entry is not None:
+            self._tz_entry.set_text(val)
             # Reapply error styling to match the restored value
             if val and val not in self._all_timezones:
-                combo_entry.add_css_class("error")
+                self._tz_entry.add_css_class("error")
             else:
-                combo_entry.remove_css_class("error")
+                self._tz_entry.remove_css_class("error")
+            self._popover.popdown()
         elif self._entry is not None:
             self._entry.set_text(val)
 
@@ -1241,8 +1296,70 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         "moonrise": "Moonrise",
         "phase": "Phase",
         "moonset": "Moonset",
-        "retrieved_at": "Retrieved",
+        "phase_value": "Progress",
+        "position": "Position",
+        "distance": "Distance",
     }
+
+    @staticmethod
+    def _format_phase_progress(value: Any) -> str:
+        """Convert a phase_value float string (0.0–1.0) to a percentage like '3%'."""
+        if value is None:
+            return "—"
+        try:
+            pct = float(str(value)) * 100
+            return f"{round(pct)}%"
+        except (ValueError, TypeError):
+            return str(value)
+
+    @staticmethod
+    def _format_position(value: Any) -> str:
+        """
+        Convert a position dict with azimuth/altitude (in radians) to a
+        human-readable string like 'Direction: East (85°) Height: 63°'.
+
+        Azimuth is measured in radians clockwise from North (0 = N, π/2 = E,
+        π = S, 3π/2 = W).  Altitude is measured in radians above the horizon.
+        """
+        if value is None:
+            return "—"
+        try:
+            if isinstance(value, str):
+                import json as _json
+                value = _json.loads(value)
+            az_rad  = float(str(value.get("azimuth", 0)))
+            alt_rad = float(str(value.get("altitude", 0)))
+
+            import math
+            az_deg  = math.degrees(az_rad) % 360
+            alt_deg = math.degrees(alt_rad)
+
+            # Cardinal / intercardinal direction from azimuth
+            directions = [
+                (22.5,  "N"),  (67.5,  "NE"), (112.5, "E"),  (157.5, "SE"),
+                (202.5, "S"),  (247.5, "SW"), (292.5, "W"),  (337.5, "NW"),
+            ]
+            compass = "N"
+            for threshold, name in directions:
+                if az_deg < threshold:
+                    compass = name
+                    break
+            else:
+                compass = "N"   # wraps back past 337.5°
+
+            # Full cardinal name for readability
+            full_names = {
+                "N": "North", "NE": "Northeast", "E": "East",  "SE": "Southeast",
+                "S": "South", "SW": "Southwest", "W": "West",  "NW": "Northwest",
+            }
+            direction_name = full_names.get(compass, compass)
+
+            return (
+                f"{direction_name} ({round(az_deg)}°) "
+                f"∡ {round(alt_deg)}°"
+            )
+        except (ValueError, TypeError, AttributeError):
+            return str(value)
 
     @staticmethod
     def _parse_moon_dt(value: str) -> Optional[datetime]:
@@ -1260,6 +1377,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
     def _format_moon_value(key: str, value: Any) -> str:
         if value is None:
             return "—"
+        if key == "phase_value":
+            return WeatherConfigWindow._format_phase_progress(value)
+        if key == "position":
+            return WeatherConfigWindow._format_position(value)
         text = str(value).strip()
         if key == "date":
             try:
@@ -1281,7 +1402,149 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 time_part = dt.strftime("%I:%M %p").lstrip("0")
                 return f"{date_part} {time_part.upper()}"
             return text
+        if key == "distance":
+            try:
+                return f"{float(text):,.2f} km"
+            except (ValueError, TypeError):
+                return text
         return text
+
+    @staticmethod
+    def _load_sun_data() -> dict[str, Any]:
+        """
+        Load ~/.cache/weather/sun-data.json.
+        Returns the parsed dict, or {} if the file is absent or unreadable.
+        """
+        sun_path = Path.home() / ".cache" / "weather" / "sun-data.json"
+        try:
+            return json.loads(sun_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _sunset_local_minutes(sun_data: dict[str, Any], tz_name: str) -> Optional[int]:
+        """
+        Convert the 'sunset' unix timestamp in sun_data to local minutes-since-midnight
+        using tz_name (an IANA timezone string, e.g. 'Asia/Dhaka').
+        Returns None if the data or timezone is unavailable/invalid.
+
+        The date in sun-data is intentionally ignored: if sun-data is from a
+        different day (e.g. yesterday), the stored sunset time is used as an
+        approximation. Sunset shifts by only ~1-2 minutes per day, so this is
+        accurate enough for the night-visibility check.
+        """
+        sunset_ts = sun_data.get("sunset")
+        if sunset_ts is None:
+            return None
+        try:
+            import zoneinfo
+            tz = zoneinfo.ZoneInfo(tz_name)
+        except Exception:
+            try:
+                import pytz  # type: ignore
+                tz = pytz.timezone(tz_name)
+            except Exception:
+                return None
+        try:
+            sunset_dt = datetime.fromtimestamp(int(sunset_ts), tz=tz)
+            return sunset_dt.hour * 60 + sunset_dt.minute
+        except Exception:
+            return None
+
+    @staticmethod
+    def _compute_moon_alert(data: dict[str, Any], tz_name: str = "") -> Optional[str]:
+        """
+        Return a one-line alert string combining all applicable conditions,
+        or None when nothing notable applies.
+
+        Conditions (all independent, combined with '. ' when both apply):
+          • Supermoon  – New Moon or Full Moon, distance ≤ 367 600 km
+            (Super New Moon when phase is New Moon)
+          • Micromoon  – New Moon or Full Moon, distance ≥ 401 000 km
+            Note: Supermoon and Micromoon are mutually exclusive by their
+            distance thresholds and therefore cannot both trigger at once.
+          • Not visible at night – low illumination OR moon down before sunset
+        """
+        phase = str(data.get("phase", "")).strip()
+        illumination_raw = str(data.get("illumination", "0")).replace("%", "").strip()
+        try:
+            illumination = float(illumination_raw)
+        except ValueError:
+            illumination = 0.0
+
+        # Extract distance from position sub-dict
+        position = data.get("position", {})
+        distance_raw = (
+            position.get("distance") if isinstance(position, dict)
+            else data.get("distance")
+        )
+        try:
+            distance_km = float(str(distance_raw))
+        except (ValueError, TypeError):
+            distance_km = None
+
+        moonrise_str = str(data.get("moonrise", "")).strip()
+        moonset_str  = str(data.get("moonset", "")).strip()
+
+        is_new_or_full = phase in ("New Moon", "Full Moon")
+
+        alerts: list[str] = []
+
+        # ── Supermoon ─────────────────────────────────────────────────────────
+        SUPERMOON_THRESHOLD = 367_600  # km
+        if is_new_or_full and distance_km is not None and distance_km <= SUPERMOON_THRESHOLD:
+            if phase == "New Moon":
+                alerts.append("🌑 Super New Moon")
+            else:
+                alerts.append("🌕 Supermoon")
+
+        # ── Micromoon ─────────────────────────────────────────────────────────
+        # (distance thresholds guarantee this never fires alongside Supermoon)
+        MICROMOON_THRESHOLD = 401_000  # km
+        if is_new_or_full and distance_km is not None and distance_km >= MICROMOON_THRESHOLD:
+            alerts.append("🌑 Micromoon")
+
+        # ── Not visible at night ──────────────────────────────────────────────
+        not_visible = False
+
+        # Very thin crescent / new moon → almost never visible
+        if illumination < 5.0:
+            not_visible = True
+
+        if not not_visible:
+            # Moonset before sunset AND moonrise before nightfall means the moon
+            # is only up during daytime/evening — not usefully visible after dark.
+            # Sunset time is read from sun-data.json (unix timestamp); nightfall is
+            # sunset + 60 min. Falls back to 19:00 / 20:00 if file is unavailable.
+            try:
+                def _hhmm(s: str) -> int:
+                    """Return minutes since midnight for a 'HH:MM[-like]' string."""
+                    h, m = s.split(":")
+                    return int(h) * 60 + int(m)
+
+                moonset_min  = _hhmm(moonset_str)
+                moonrise_min = _hhmm(moonrise_str)
+
+                sun_data   = WeatherConfigWindow._load_sun_data()
+                sunset_min = WeatherConfigWindow._sunset_local_minutes(sun_data, tz_name)
+                if sunset_min is not None:
+                    nightfall = sunset_min + 60   # 60 min after sunset = start of night
+                else:
+                    sunset_min = 19 * 60   # fallback: 19:00
+                    nightfall  = 20 * 60   # fallback: 20:00
+
+                if moonset_min < sunset_min and moonrise_min < nightfall:
+                    not_visible = True
+            except Exception:
+                pass  # malformed times – skip this check
+
+        if not_visible:
+            alerts.append("Not visible at night.")
+
+        if not alerts:
+            return None
+
+        return ". ".join(alerts)
 
     def _call_moon_api(self) -> dict[str, Any]:
         """Fetch moon data from astroapi.byhrast.com using values from the loaded config."""
@@ -1316,6 +1579,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             raise RuntimeError(f"Network error: {exc.reason}") from exc
 
         data = json.loads(raw)
+        data = json.loads(raw, parse_float=Decimal)
 
         if "moonrise" not in data:
             raise RuntimeError("Unexpected response: 'moonrise' field missing")
@@ -1336,7 +1600,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 data = self._call_moon_api()
                 moon_path = Path.home() / ".cache" / "weather" / "moon-data.json"
                 moon_path.parent.mkdir(parents=True, exist_ok=True)
-                moon_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                moon_path.write_text(
+                    json.dumps(data, indent=2, default=str),
+                    encoding="utf-8"
+                )
                 GLib.idle_add(_on_success, data)
             except Exception as exc:
                 GLib.idle_add(_on_error, str(exc))
@@ -1365,10 +1632,50 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _moon_retrieved_description(self, data: dict[str, Any]) -> str:
+        """Build the Moon Data group description, appending a formatted retrieved_at timestamp."""
+        description = ""
+        retrieved_raw = data.get("retrieved_at", "")
+        if retrieved_raw:
+            dt = self._parse_moon_dt(str(retrieved_raw).strip())
+            if dt:
+                date_part = f"{dt.day} {dt.strftime('%B %Y')}"
+                time_part = dt.strftime("%I:%M %p").lstrip("0")
+                return f"{description}Retrieved: {date_part} {time_part.upper()}"
+        return description
+
     def _refresh_moon_data_values(self, data: dict[str, Any]) -> None:
         """Update the Moon Data value labels in-place without rebuilding the whole UI."""
+        def _get(key: str) -> Any:
+            if key == "phase_value":
+                phase_details = data.get("phase_details")
+                if isinstance(phase_details, dict):
+                    return phase_details.get("phase_value")
+                return data.get("phase_value")
+            if key == "distance":
+                position = data.get("position")
+                if isinstance(position, dict):
+                    return position.get("distance")
+                return data.get("distance")
+            return data.get(key)
+
         for key, val_label in self._moon_value_labels.items():
-            val_label.set_label(self._format_moon_value(key, data.get(key)))
+            val_label.set_label(self._format_moon_value(key, _get(key)))
+
+        # Refresh the optional alert row
+        if hasattr(self, "_moon_alert_row") and self._moon_alert_row is not None:
+            tz_name = self._entries.get("TIMEZONE", None)
+            tz_name = tz_name.display_value.strip() if tz_name else ""
+            alert = self._compute_moon_alert(data, tz_name)
+            if alert:
+                self._moon_alert_label.set_label(alert)
+                self._moon_alert_row.set_visible(True)
+            else:
+                self._moon_alert_row.set_visible(False)
+
+        # Also refresh the group description with the new retrieved_at timestamp
+        if self._moon_data_group:
+            self._moon_data_group.set_description(self._moon_retrieved_description(data))
 
     def _build_moon_data_section(self) -> Adw.PreferencesGroup:
         """
@@ -1378,7 +1685,6 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         """
         group = Adw.PreferencesGroup()
         group.set_title("Moon Data")
-        group.set_description("Current lunar phase and visibility details")
         group.set_margin_top(4)
 
         # ── Update button in group header ─────────────────────────────────────
@@ -1405,6 +1711,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             group.add(main_row)
             return group
 
+        group.set_description(self._moon_retrieved_description(data))
+
         outer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         outer_box.set_hexpand(True)
         outer_box.set_margin_start(16)
@@ -1419,6 +1727,26 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             grid.set_hexpand(True)
             grid.set_halign(Gtk.Align.FILL)
 
+        def _get_moon_value(key: str) -> Any:
+            """
+            Resolve a display key to its value in the JSON.
+            phase_value → data["phase_details"]["phase_value"]
+            position    → data["position"]  (dict)
+            distance    → data["position"]["distance"]
+            Everything else → data[key]
+            """
+            if key == "phase_value":
+                phase_details = data.get("phase_details")
+                if isinstance(phase_details, dict):
+                    return phase_details.get("phase_value")
+                return data.get("phase_value")  # top-level fallback
+            if key == "distance":
+                position = data.get("position")
+                if isinstance(position, dict):
+                    return position.get("distance")
+                return data.get("distance")
+            return data.get(key)
+
         fields = list(self._MOON_FIELD_LABELS.items())
         for i, (key, label) in enumerate(fields):
             target = left_grid if i % 2 == 0 else right_grid
@@ -1428,7 +1756,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             lbl.set_halign(Gtk.Align.START)
             lbl.add_css_class("dim-label")
 
-            val = Gtk.Label(label=self._format_moon_value(key, data.get(key)))
+            val = Gtk.Label(label=self._format_moon_value(key, _get_moon_value(key)))
             val.set_halign(Gtk.Align.END)
             val.set_hexpand(True)
             val.set_selectable(False)
@@ -1439,15 +1767,44 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             target.attach(lbl, 0, row_idx, 1, 1)
             target.attach(val, 1, row_idx, 1, 1)
 
-        sep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        sep.set_margin_start(24)
-        sep.set_margin_end(24)
+        vsep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        vsep.set_margin_start(24)
+        vsep.set_margin_end(24)
 
         outer_box.append(left_grid)
-        outer_box.append(sep)
+        outer_box.append(vsep)
         outer_box.append(right_grid)
 
-        main_row.set_child(outer_box)
+        # ── Optional alert row (separator + label) ────────────────────────────
+        _tz_entry = self._entries.get("TIMEZONE", None)
+        _tz_name  = _tz_entry.display_value.strip() if _tz_entry else ""
+        alert_text = self._compute_moon_alert(data, _tz_name)
+
+        alert_sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        alert_sep.set_margin_start(16)
+        alert_sep.set_margin_end(16)
+
+        alert_label = Gtk.Label(label=alert_text or "")
+        alert_label.set_halign(Gtk.Align.CENTER)
+        alert_label.set_margin_top(8)
+        alert_label.set_margin_bottom(8)
+        alert_label.add_css_class("dim-label")
+
+        alert_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        alert_box.append(alert_sep)
+        alert_box.append(alert_label)
+        alert_box.set_visible(alert_text is not None)
+
+        # Store references for in-place refresh
+        self._moon_alert_row   = alert_box
+        self._moon_alert_label = alert_label
+
+        # Wrap grids + optional alert in a vertical container
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        content_box.append(outer_box)
+        content_box.append(alert_box)
+
+        main_row.set_child(content_box)
         group.add(main_row)
 
         return group

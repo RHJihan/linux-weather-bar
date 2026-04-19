@@ -66,6 +66,8 @@ readonly SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST=true
 # ─── Moon Phase ───────────────────────────────────────────────────────────────
 # Show the current moon phase
 readonly MOON_PHASE_ENABLED=true
+# Max age (hours) for lunar cache freshness during active moon window before refresh is triggered.
+readonly LUNAR_CACHE_MAX_AGE_HOURS=2
 # When to start showing moon phase (after sunset or moonrise):
 #   - Numeric:   Minutes after sunset (or moonrise if it occurs after sunset)
 #   - "moonrise": Show from moonrise onwards
@@ -76,6 +78,8 @@ readonly MOON_PHASE_WINDOW_START="moonrise"
 readonly MOON_PHASE_WINDOW_DURATION="moonset"
 # true → display moon phase regardless of daylight hours
 readonly SHOW_MOONPHASE_DURING_DAYTIME=false
+# Suppress moon phase display when the moon is too dim to be visible
+readonly SUPPRESS_MOONPHASE_NOT_VISIBLE=true
 # true → display even when it's currently raining; false → suppress during active rain
 readonly MOON_PHASE_SHOW_DURING_RAIN=true
 # true → display even when rain is in the forecast; false → suppress when rain expected
@@ -84,3 +88,7 @@ readonly MOON_PHASE_SHOW_WITH_RAIN_FORECAST=true
 readonly SHOW_MOONPHASE_BENGALI=false
 # true → show phase name in both English and Bengali (overrides SHOW_MOONPHASE_BENGALI)
 readonly SHOW_MOONPHASE_BILINGUAL=false
+# Append supermoon, super new moon, or micromoon label to phase name when applicable
+readonly SHOW_LUNAR_APSIDAL_SYZYGY=true
+# Only show supermoon/micromoon if the moon is visible at night
+readonly ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY=false

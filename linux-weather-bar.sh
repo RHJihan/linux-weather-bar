@@ -63,6 +63,7 @@ load_or_create_config
 : "${SHOW_SUNRISE_SUNSET_DURING_RAIN:=true}"
 : "${SHOW_SUNRISE_SUNSET_WITH_RAIN_FORECAST:=true}"
 : "${MOON_PHASE_ENABLED:=false}"
+: "${LUNAR_CACHE_MAX_AGE_HOURS:=2}"
 : "${MOON_PHASE_WINDOW_START:=1}"
 : "${MOON_PHASE_WINDOW_DURATION:=60}"
 : "${SHOW_MOONPHASE_DURING_DAYTIME:=false}"
@@ -76,6 +77,9 @@ load_or_create_config
 : "${SHOW_MOONRISE_MOONSET_DURING_RAIN:=false}"
 : "${SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST:=false}"
 : "${SHOW_MOONRISE_MOONSET_DURING_DAYTIME:=false}"
+: "${SHOW_LUNAR_APSIDAL_SYZYGY:=false}"
+: "${ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY:=false}"
+: "${SUPPRESS_MOONPHASE_NOT_VISIBLE:=false}"
 
 # ─── Validate Required Credentials ────────────────────────────────────────────
 if [[ -z "${MOON_API_KEY:-}" ]] && [[ "${MOON_PHASE_ENABLED}" == "true" ]]; then
@@ -552,8 +556,11 @@ call_moon_api() {
     # Sanity-check: ensure expected field is present
     echo "$response" | jq -e '.moonrise' >/dev/null 2>&1 || return 1
 
-    # Add fetch timestamp (ISO 8601 format with timezone)
-    response=$(echo "$response" | jq --arg ts "$(date -Iseconds)" '. + {retrieved_at: $ts}')
+    # Add fetch timestamp and convert all values to strings
+    response=$(echo "$response" | jq --arg ts "$(date -Iseconds)" '
+        . + {retrieved_at: $ts}
+        | walk(if type == "number" or type == "boolean" then tostring else . end)
+    ')
 
     echo "$response"
 }
@@ -594,16 +601,25 @@ fetch_moon_data() {
 #    - Otherwise → use today's data
 #
 # 3. Validate cache:
-#    - If cached date matches required date AND
-#      moonset has NOT passed → return cache immediately
+#    - If cached date matches required date → validate retrieved_at staleness
+#      (see step 3a); otherwise return cache immediately
 #    - If cached moonset has already passed → invalidate cache
+#
+# 3a. retrieved_at staleness refresh (post-moonrise, within lunar cycle):
+#    - If now is past sunrise (not overnight) and past moonrise, but retrieved_at
+#      predates moonrise, the cached position/illumination data is pre-moonrise
+#      stale. Fetch fresh data and update the cache.
+#    - The refresh is further gated to the active lunar cycle (now < moonset),
+#      so we never refresh after the moon has already set.
+#    - Skipped during overnight (now < sunrise) where needed_date is deliberately
+#      yesterday — refreshing then would fetch today's data and corrupt the
+#      overnight lunar cycle.
 #
 # 4. If cache is stale or invalid:
 #    a. Fetch fresh data from API
 #    b. Use overnight-aware API request when needed
 #    c. Update cache ONLY if:
 #       - Fetch is successful
-#       - Moonset for fetched data has passed
 #       - Fetched date matches the required date
 #
 # 5. Fallback behavior:
@@ -663,6 +679,74 @@ get_moon_data() {
 	# CACHE VALIDATION
 	# ─────────────────────────────────────────────
 	if [[ "$cached_date" == "$needed_date" ]]; then
+		# Cache date matches — but check if retrieved_at is stale relative to moonrise.
+		# Refresh if now is past moonrise but retrieved_at predates it, meaning the
+		# cache was fetched before the moon was up (position/illumination data stale).
+		#
+		# Safety boundary: skip during overnight (before sunrise) where needed_date
+		# is deliberately yesterday — refreshing then would fetch today's data and
+		# corrupt the overnight lunar cycle.
+
+		if (( sunrise_epoch > 0 && now >= sunrise_epoch )); then
+			local retrieved_at_epoch=0
+			local retrieved_at_str
+			retrieved_at_str=$(jq -r '.retrieved_at // ""' <<<"$cache" 2>/dev/null)
+			if [[ -n "$retrieved_at_str" ]]; then
+				retrieved_at_epoch=$(date -d "$retrieved_at_str" +%s 2>/dev/null || echo 0)
+			fi
+
+			# Resolve moonrise/moonset epochs from cached data
+			local normalized_needed_date cached_moonrise_hhmm cached_moonrise_epoch=0
+			if [[ "$cached_date" =~ ^[0-9]{2}/[0-9]{2}/[0-9]{4}$ ]]; then
+				normalized_needed_date=$(date -d "$(echo "$cached_date" | awk -F/ '{print $3"-"$2"-"$1}')" +"%Y-%m-%d" 2>/dev/null)
+				cached_moonrise_hhmm=$(jq -r '.moonrise // ""' <<<"$cache" 2>/dev/null)
+				cached_moonrise_epoch=$(hhmm_to_epoch "$normalized_needed_date" "$cached_moonrise_hhmm")
+				cached_moonrise_epoch=${cached_moonrise_epoch:-0}
+			fi
+
+			# ─────────────────────────────────────────────
+			# Cache freshness policy
+			# ─────────────────────────────────────────────
+			LUNAR_CACHE_MAX_AGE_SECONDS=$((LUNAR_CACHE_MAX_AGE_HOURS * 3600))
+
+			# Stale if:
+			# 1) retrieved before moonrise but now after moonrise (original logic)
+			# OR
+			# 2) inside lunar window AND older than configured max age (NEW logic)
+			if (( retrieved_at_epoch > 0 && cached_moonrise_epoch > 0 )); then
+
+				local stale_by_rise_logic=0
+				if (( now >= cached_moonrise_epoch && retrieved_at_epoch < cached_moonrise_epoch )) && \
+				(( moonset_epoch == 0 || now < moonset_epoch )); then
+					stale_by_rise_logic=1
+				fi
+
+				local stale_by_age=0
+				if (( now >= cached_moonrise_epoch )) && \
+				(( moonset_epoch == 0 || now < moonset_epoch )) && \
+				(( retrieved_at_epoch >= cached_moonrise_epoch )) && \
+				(( moonset_epoch == 0 || retrieved_at_epoch < moonset_epoch )) && \
+				(( now - retrieved_at_epoch > LUNAR_CACHE_MAX_AGE_SECONDS )); then
+					stale_by_age=1
+				fi
+
+				if (( stale_by_rise_logic == 1 || stale_by_age == 1 )); then
+					local refreshed_data
+					refreshed_data=$(fetch_moon_data) || refreshed_data=""
+					if [[ -n "$refreshed_data" ]]; then
+						local refreshed_date
+						refreshed_date=$(jq -r '.date // ""' <<<"$refreshed_data" 2>/dev/null)
+						if [[ "$refreshed_date" == "$needed_date" ]]; then
+							mkdir -p "$(dirname "$MOON_DATA_FILE")"
+							echo "$refreshed_data" | jq '.' > "$MOON_DATA_FILE"
+							echo "$refreshed_data"
+							return 0
+						fi
+					fi
+				fi
+			fi
+		fi
+
 		echo "$cache"
 		return 0
 	fi
@@ -834,21 +918,192 @@ resolve_phase_index() {
 #   MOON_PHASE_EMOJIS, MOON_PHASE_NAMES, MOON_PHASE_NAMES_BN
 # Arguments:
 #   $1 - Phase index (0-7)
+#   $2 - Apsidal syzygy label (optional, e.g. "Supermoon", "Micromoon")
+#        When provided and non-empty, appended as "(label)" after the phase name.
+#        In bilingual mode it is always appended in English after the Bengali name.
 # Outputs:
-#   English:    "🌕  Full Moon"
-#   Bengali:    "🌕  পূর্ণিমা"
-#   Bilingual:  "🌕  Full Moon (পূর্ণিমা)"
+#   English:    "🌕  Full Moon"          or  "🌕  Full Moon (Supermoon)"
+#   Bengali:    "🌕  পূর্ণিমা"           or  "🌕  পূর্ণিমা (Supermoon)"
+#   Bilingual:  "🌕  Full Moon (পূর্ণিমা)" or  "🌕  Full Moon (পূর্ণিমা) (Supermoon)"
 # Returns:
 #   0 always
 #######################################
 get_moon_phase() {
 	local phase_index="$1"
+	local syzygy_label="${2:-}"
+
+	local base
 	if [[ "$SHOW_MOONPHASE_BILINGUAL" == "true" ]]; then
-		echo "${MOON_PHASE_EMOJIS[phase_index]}  ${MOON_PHASE_NAMES[phase_index]} (${MOON_PHASE_NAMES_BN[phase_index]})"
+		base="${MOON_PHASE_EMOJIS[phase_index]}  ${MOON_PHASE_NAMES[phase_index]} (${MOON_PHASE_NAMES_BN[phase_index]})"
 	elif [[ "$SHOW_MOONPHASE_BENGALI" == "true" ]]; then
-		echo "${MOON_PHASE_EMOJIS[phase_index]}  ${MOON_PHASE_NAMES_BN[phase_index]}"
+		base="${MOON_PHASE_EMOJIS[phase_index]}  ${MOON_PHASE_NAMES_BN[phase_index]}"
 	else
-		echo "${MOON_PHASE_EMOJIS[phase_index]}  ${MOON_PHASE_NAMES[phase_index]}"
+		base="${MOON_PHASE_EMOJIS[phase_index]}  ${MOON_PHASE_NAMES[phase_index]}"
+	fi
+
+	if [[ -n "$syzygy_label" ]]; then
+		echo "${base} (${syzygy_label})"
+	else
+		echo "$base"
+	fi
+}
+
+#######################################
+# Extract illumination percentage as a plain number (no % sign).
+#
+# Arguments:
+#   $1 - Moon data JSON string
+# Outputs:
+#   Numeric string (e.g. "5.0"), or empty on failure
+# Returns:
+#   0 always
+#######################################
+parse_illumination_pct() {
+	local moon_data="$1"
+	jq -r '.illumination // ""' <<<"$moon_data" 2>/dev/null | tr -d '%'
+}
+
+# Determine whether the moon is too dim to be considered visible
+# based on its illumination percentage.
+#
+# Args:
+#   $1 - illumination_pct (numeric, e.g., 2.5 for 2.5%)
+#
+# Returns:
+#   0 (true)  - if illumination is below visibility threshold (< 5.0%)
+#   1 (false) - if illumination is sufficient for visibility
+#
+# Notes:
+#   - Returns false if input is empty or invalid
+#   - Threshold (5.0%) can be adjusted based on desired sensitivity
+is_moon_too_dim() {
+	local illumination_pct="$1"
+
+	# Return false if empty (can't decide)
+	[[ -z "$illumination_pct" ]] && return 1
+
+	awk -v i="$illumination_pct" 'BEGIN { exit (i < 5.0 ? 0 : 1) }'
+}
+
+#######################################
+# Determine whether the moon is visible during nighttime hours.
+#
+# A moon is considered "not visible at night" if EITHER condition is true:
+#
+#   1. Illumination < 5% — the moon is physically too close to the sun
+#      to be observable (always true for New Moon). This catches Super New
+#      Moon reliably regardless of its rise/set times, since a New Moon
+#      always tracks the sun across the sky.
+#
+#   2. Moonset before effective_sunset AND moonrise before nightfall
+#      (effective_sunset + 60 min) — the moon is only above the horizon
+#      during daytime/early evening, never during true night.
+#
+# Condition 1 short-circuits: if illumination < 5%, condition 2 is never
+# evaluated.
+#
+# Arguments:
+#   $1 - moonrise_epoch         (0 if unknown/not visible)
+#   $2 - moonset_epoch          (0 if unknown/not visible)
+#   $3 - effective_sunset_epoch (yesterday's if overnight, today's otherwise)
+#   $4 - illumination_pct       (numeric, e.g. 2.4 — no % sign)
+# Outputs:
+#   (none)
+# Returns:
+#   0 (true)  if moon IS visible during nighttime (show syzygy label)
+#   1 (false) if moon is NOT visible at night (suppress syzygy label)
+#######################################
+is_moon_visible_at_night() {
+	local moonrise_epoch="$1"
+	local moonset_epoch="$2"
+	local effective_sunset_epoch="$3"
+	local illumination_pct="$4"
+
+	# Condition 1: illumination too low
+	if is_moon_too_dim "$illumination_pct"; then
+		return 1  # not visible at night
+	fi
+
+	# Condition 2: timing check — moon only up during daytime/early evening
+	# If times are unknown, assume visible (don't suppress)
+	(( moonrise_epoch > 0 && moonset_epoch > 0 && effective_sunset_epoch > 0 )) || return 0
+
+	local nightfall_epoch
+	nightfall_epoch=$(( effective_sunset_epoch + 3600 ))  # 60 min after sunset = start of night
+
+	if (( moonset_epoch < effective_sunset_epoch && moonrise_epoch < nightfall_epoch )); then
+		return 1  # not visible at night
+	fi
+
+	return 0  # visible at night
+}
+
+#######################################
+# Compute an apsidal syzygy label for the current moon, if applicable.
+#
+# Distance thresholds (mutually exclusive):
+#   Supermoon / Super New Moon – distance ≤ 367 600 km
+#   Micromoon                  – distance ≥ 401 000 km
+#
+# When ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY is true, the label is
+# suppressed if the moon is not visible during nighttime hours — either
+# because illumination is below 5% (lost in solar glare) or because
+# moonset falls before sunset AND moonrise before nightfall.
+# This will typically suppress Super New Moon labels since New Moons
+# are near-solar and always have near-zero illumination.
+#
+# Arguments:
+#   $1 - Moon data JSON string
+#   $2 - moonrise_epoch        (from parse_moon_times; 0 if unknown)
+#   $3 - moonset_epoch         (from parse_moon_times; 0 if unknown)
+#   $4 - effective_sunset_epoch (yesterday's if overnight, today's otherwise)
+# Outputs:
+#   Label string: "Super New Moon", "Supermoon", or "Micromoon"
+#   Empty string if none applies, feature disabled, or visibility suppressed
+# Returns:
+#   0 always
+#######################################
+get_lunar_apsidal_syzygy() {
+	local moon_data="$1"
+	local moonrise_epoch="${2:-0}"
+	local moonset_epoch="${3:-0}"
+	local effective_sunset_epoch="${4:-0}"
+
+	[[ "$SHOW_LUNAR_APSIDAL_SYZYGY" == "true" ]] || return 0
+	[[ -n "$moon_data" ]] || return 0
+
+	local phase distance_km illumination_pct
+	phase=$(jq -r '.phase // ""' <<<"$moon_data" 2>/dev/null)
+	distance_km=$(jq -r '.position.distance // ""' <<<"$moon_data" 2>/dev/null)
+	illumination_pct=$(parse_illumination_pct "$moon_data")
+
+	# Must be New Moon or Full Moon
+	[[ "$phase" == "New Moon" || "$phase" == "Full Moon" ]] || return 0
+
+	# Must have a parseable distance
+	[[ -n "$distance_km" ]] || return 0
+
+	# ── Night visibility gate ──────────────────────────────────────────────────
+	if [[ "$ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY" == "true" ]]; then
+		if ! is_moon_visible_at_night \
+				"$moonrise_epoch" "$moonset_epoch" \
+				"$effective_sunset_epoch" "$illumination_pct"; then
+			return 0  # moon not visible at night — suppress label
+		fi
+	fi
+
+	local is_supermoon is_micromoon
+	is_supermoon=$(awk -v d="$distance_km" 'BEGIN { print (d <= 367600) ? "true" : "false" }')
+	is_micromoon=$(awk -v d="$distance_km" 'BEGIN { print (d >= 401000) ? "true" : "false" }')
+
+	if [[ "$is_supermoon" == "true" ]]; then
+		if [[ "$phase" == "New Moon" ]]; then
+			echo "Super New Moon"
+		else
+			echo "Supermoon"
+		fi
+	elif [[ "$is_micromoon" == "true" ]]; then
+		echo "Micromoon"
 	fi
 }
 
@@ -916,27 +1171,29 @@ resolve_window_end() {
 #
 # Shows moon if ALL conditions are met:
 # 1. MOON_PHASE_ENABLED is true (master kill switch)
-# 2. Current time is between sunset and sunrise (solar window)
+# 2. Current time is between effective sunset and sunrise (solar window)
 # 3. Moon is visible (between moonrise and moonset, lunar window)
 # 4. Current time is within display window (configured start/end)
 # 5. Not suppressed by rain conditions
+# 6. Not suppressed by SUPPRESS_MOONPHASE_NOT_VISIBLE (if enabled)
 #
 # Window Calculation:
-# Solar Window: sunset_epoch (Day N) → sunrise_epoch (Day N+1)
+# Solar Window: effective_sunset_epoch (Day N) → effective_sunrise_epoch (Day N+1)
 # Lunar Window: moonrise_epoch → moonset_epoch
-# Final Window: [max(sunset, moonrise), min(sunrise, moonset)] ∩ [window_start, window_end]
-#   window_start = max(sunset, moonrise) + MOON_PHASE_WINDOW_START minutes
-#   window_end   = clamped to sunrise by resolve_window_end (solar ceiling enforced there)
-
+# Final Window: [max(effective_sunset, moonrise), min(effective_sunrise, moonset)] ∩ [window_start, window_end]
+#   window_start = max(effective_sunset, moonrise) + MOON_PHASE_WINDOW_START minutes
+#   window_end   = clamped to effective_sunrise by resolve_window_end (solar ceiling enforced there)
+#
 # Time Comparison: All comparisons use Unix epoch (seconds), eliminating
 # "crossing midnight" issues that would arise from HH:MM string comparisons.
 #
 # Globals:
 #   MOON_PHASE_ENABLED, MOON_PHASE_WINDOW_START, MOON_PHASE_WINDOW_DURATION,
-#   MOON_PHASE_SHOW_DURING_RAIN, MOON_PHASE_SHOW_WITH_RAIN_FORECAST
+#   MOON_PHASE_SHOW_DURING_RAIN, MOON_PHASE_SHOW_WITH_RAIN_FORECAST,
+#   SUPPRESS_MOONPHASE_NOT_VISIBLE
 # Arguments:
-#   $1 - sunset_epoch
-#   $2 - sunrise_epoch
+#   $1 - effective_sunset_epoch  (yesterday's if overnight, today's otherwise)
+#   $2 - effective_sunrise_epoch (tomorrow's if past today's sunrise)
 #   $3 - is_currently_raining (default: false)
 #   $4 - has_rain_forecast (default: false)
 #   $5 - Moon data JSON string (required for phase display)
@@ -946,8 +1203,8 @@ resolve_window_end() {
 #   0 always
 #######################################
 resolve_moon_phase() {
-	local sunset_epoch="$1"
-	local sunrise_epoch="${2:-0}"
+	local effective_sunset_epoch="$1"
+	local effective_sunrise_epoch="${2:-0}"
 	local is_currently_raining="${3:-false}"
 	local has_rain_forecast="${4:-false}"
 	local moon_data="${5:-}"
@@ -964,41 +1221,40 @@ resolve_moon_phase() {
 
 	# 3. Resolve moon times (moonrise/moonset)
 	local moonrise_epoch moonset_epoch
-	IFS=$'\t' read -r moonrise_epoch moonset_epoch <<<"$(parse_moon_times "$moon_data" "$sunrise_epoch")"
+	IFS=$'\t' read -r moonrise_epoch moonset_epoch \
+		<<<"$(parse_moon_times "$moon_data" "$effective_sunrise_epoch")"
 
-	# 4. Check solar window (sunset → sunrise, crossing midnight)
+	# 4. Check solar window (effective_sunset → effective_sunrise, crossing midnight)
 	local now
 	now=$(date +%s)
 
-	# Skip solar window restriction if show phase after sunrise is enabled.
+	# Skip solar window restriction if show phase during daytime is enabled.
 	if [[ "$SHOW_MOONPHASE_DURING_DAYTIME" != "true" ]]; then
 		# Solar window is active if:
-		#   now >= sunset_epoch AND now < sunrise_epoch
+		#   now >= effective_sunset_epoch AND now < effective_sunrise_epoch
 		# This naturally handles crossing midnight because:
-		#   - Before midnight: sunset < midnight < sunrise (next day)
-		#   - After midnight: yesterday's sunset < now < today's sunrise
-		if ! (( now >= sunset_epoch && now < sunrise_epoch )); then
-			# Not in window (daytime) — suppress moon phase
+		#   - Before midnight: effective_sunset < midnight < effective_sunrise (next day)
+		#   - After midnight:  yesterday's effective_sunset < now < today's effective_sunrise
+		if ! (( now >= effective_sunset_epoch && now < effective_sunrise_epoch )); then
+			# Not in solar window (daytime) — suppress moon phase
 			return 0
 		fi
 	fi
 
 	# 5. Handle "not visible" corner cases first (before window check)
-	# If moonrise is "Not visible"
-	# Treat as sunset + 30 min (ONLY if still within solar window)
+	# If moonrise is "Not visible" — treat as effective_sunset + 30 min
 	if (( moonrise_epoch == 0 )); then
-		moonrise_epoch=$(( sunset_epoch + 1800 ))
+		moonrise_epoch=$(( effective_sunset_epoch + 1800 ))
 	fi
-	# If moonset is "Not visible"
-	# Treat as 23:59 of the current day per spec
+	# If moonset is "Not visible" — treat as 23:59 of the current day
 	if (( moonset_epoch == 0 )); then
 		moonset_epoch=$(date -d "$(date +%Y-%m-%d) 23:59:00" +%s 2>/dev/null || \
 		                date -j -f "%Y-%m-%d %H:%M:%S" "$(date +%Y-%m-%d) 23:59:00" +%s 2>/dev/null)
 	fi
 
 	# Post-fallback midnight-crossing correction:
-	# If moonrise_epoch was just resolved from "Not visible" (sunset+30min, which is evening),
-	# and moonset_epoch is a real HH:MM that falls earlier in the day (e.g., 06:20 today),
+	# If moonrise_epoch was just resolved from "Not visible" (effective_sunset+30min),
+	# and moonset_epoch is a real HH:MM earlier in the day (e.g., 06:20),
 	# moonset is actually NEXT DAY relative to moonrise — add 86400.
 	if (( moonset_epoch > 0 && moonrise_epoch > 0 && moonset_epoch < moonrise_epoch )); then
 		moonset_epoch=$(( moonset_epoch + 86400 ))
@@ -1012,13 +1268,13 @@ resolve_moon_phase() {
 	fi
 
 	# 7. Resolve display window (user-configured start/end)
-	# Anchor is the later of sunset or moonrise (intersection start)
+	# Anchor is the later of effective_sunset or moonrise (intersection start)
 	local window_anchor
-	window_anchor=$(( sunset_epoch > moonrise_epoch ? sunset_epoch : moonrise_epoch ))
+	window_anchor=$(( effective_sunset_epoch > moonrise_epoch ? effective_sunset_epoch : moonrise_epoch ))
 
 	local window_start window_end
 	window_start=$(resolve_window_start "$MOON_PHASE_WINDOW_START" "$window_anchor" "$moonrise_epoch")
-	window_end=$(resolve_window_end "$MOON_PHASE_WINDOW_DURATION" "$window_start" "$moonset_epoch" "$sunrise_epoch")	
+	window_end=$(resolve_window_end "$MOON_PHASE_WINDOW_DURATION" "$window_start" "$moonset_epoch" "$effective_sunrise_epoch")
 
 	# 8. Check if current time is within display window
 	if ! (( now >= window_start && now < window_end )); then
@@ -1037,12 +1293,30 @@ resolve_moon_phase() {
 		return 0
 	fi
 
-	# 10. All conditions met — resolve and display moon phase	
+	# 10. Suppress moon phase if moon is not visible (day or night).
+	if [[ "$SUPPRESS_MOONPHASE_NOT_VISIBLE" == "true" ]]; then
+		local illumination_pct
+		illumination_pct=$(parse_illumination_pct "$moon_data")
+
+		if is_moon_too_dim "$illumination_pct"; then
+			return 0  # suppress output (moon not visible)
+		fi
+	fi
+
+	# 11. All conditions met — resolve and display moon phase
 	local phase_index
 	phase_index=$(resolve_phase_index "$moon_data")
 
 	if [[ -n "$phase_index" ]]; then
-		get_moon_phase "$phase_index"
+		local syzygy_label
+		# Pass already-resolved moon times and effective_sunset_epoch so the
+		# night-visibility gate inside get_lunar_apsidal_syzygy needs no extra parsing
+		syzygy_label=$(get_lunar_apsidal_syzygy \
+			"$moon_data" \
+			"$moonrise_epoch" \
+			"$moonset_epoch" \
+			"$effective_sunset_epoch")
+		get_moon_phase "$phase_index" "$syzygy_label"
 	fi
 }
 
