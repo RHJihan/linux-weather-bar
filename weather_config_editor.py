@@ -228,10 +228,10 @@ SCHEMA: list[VarSchema] = [
     VarSchema("SHOW_MOONPHASE_BENGALI",             "Bengali Phase Name",          VarType.BOOLEAN,
               "Show phase name in Bengali only", readonly=True, group="Moon Phase"),
     VarSchema("SHOW_LUNAR_APSIDAL_SYZYGY",             "Apsidal Syzygy Label",          VarType.BOOLEAN,
-          "Append supermoon, super new moon, or micromoon label to phase name when applicable",
+          "Show supermoon, super new moon, or micromoon label when applicable",
           readonly=True, group="Moon Phase"),
-    VarSchema("ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY", "Night-Only Syzygy Label", VarType.BOOLEAN,
-          "Only show supermoon/micromoon if the moon is visible at night", 
+    VarSchema("ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY", "Restrict Syzygy Label to Night Visibility", VarType.BOOLEAN,
+          "Only show the syzygy label when the moon is visibly above the horizon at night", 
           readonly=True, group="Moon Phase"),
 
     # ── API Keys ──────────────────────────────────────────────────────────────
