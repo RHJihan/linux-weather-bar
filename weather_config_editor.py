@@ -267,7 +267,7 @@ GROUPS: list[str] = list(dict.fromkeys(s.group for s in SCHEMA))
 
 @dataclass(frozen=True)
 class LocationEntry:
-    """A unique (name, lat, lon) location from ip_mappings.csv."""
+    """A unique (name, lat, lon) location from location_mappings.csv."""
     name: str
     lat: str
     lon: str
@@ -283,11 +283,11 @@ class LocationEntry:
 
 class IpMappingStore:
     """
-    Loads ip_mappings.csv, deduplicates by (NAME, LATITUDE, LONGITUDE),
+    Loads location_mappings.csv, deduplicates by (NAME, LATITUDE, LONGITUDE),
     and persists the last used CSV path via GSettings (same key namespace).
     """
 
-    CSV_FILENAME = "ip_mappings.csv"
+    CSV_FILENAME = "location_mappings.csv"
 
     def __init__(self, settings: Optional[Gio.Settings]) -> None:
         self._settings = settings
@@ -295,7 +295,7 @@ class IpMappingStore:
     # ── Discovery (mirrors WeatherConfigApp._get_local_config pattern) ────────
 
     def find_default_csv(self) -> Optional[Path]:
-        """Check script directory for ip_mappings.csv (auto-load, same as .weather_config)."""
+        """Check script directory for location_mappings.csv (auto-load, same as .weather_config)."""
         candidate = Path(__file__).resolve().parent / self.CSV_FILENAME
         return candidate if candidate.exists() else None
 
@@ -370,7 +370,7 @@ class TimezoneStore:
         self._loaded = False
 
     def find_zone_tab(self) -> Optional[Path]:
-        """Look for zone.tab next to the script (same discovery pattern as ip_mappings.csv)."""
+        """Look for zone.tab next to the script (same discovery pattern as location_mappings.csv)."""
         candidate = Path(__file__).resolve().parent / self.ZONE_TAB_FILENAME
         return candidate if candidate.exists() else None
 
@@ -705,7 +705,7 @@ class EnumRow(BaseRow):
 class LocationRow(BaseRow):
     """
     LOCATION row with:
-    - Preset dropdown loaded from ip_mappings.csv
+    - Preset dropdown loaded from location_mappings.csv
     - CUSTOM checkbox to reveal manual lat/lon entries (existing UI)
     - pin button to open Google Maps
     """

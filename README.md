@@ -223,7 +223,7 @@ The config system is tightly integrated with:
 
 ### Smart Location Picker
 
-* Uses `ip_mappings.csv`
+* Uses `location_mappings.csv`
 * Features:
 
   * Dropdown presets
@@ -420,7 +420,7 @@ linux-weather-bar/
 ├── weather_config_editor.py    # GTK config manager
 ├── .weather_config.template
 ├── .weather_config
-├── ip_mappings.csv            # optional location presets
+├── location_mappings.csv            # optional location presets
 ├── zone.tab                   # timezone database
 └── README.md
 ```
