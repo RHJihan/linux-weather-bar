@@ -59,6 +59,8 @@ load_or_create_config
 
 # ─── Set Configuration Defaults (for set -u safety) ────────────────────────────
 : "${API_KEY_TYPE:=FREE}"
+: "${MAX_CONNECTIVITY_RETRIES:=5}"
+: "${CONNECTIVITY_RETRY_DELAY:=5}"
 : "${FEELS_LIKE_THRESHOLD:=5}"
 : "${SHOW_RAIN_FORECAST:=true}"
 : "${RAIN_FORECAST_THRESHOLD:=0.80}"
@@ -482,44 +484,6 @@ load_moon_cache() {
 	cat "$MOON_DATA_FILE"
 }
 
-#######################################
-# Check whether the moon cache holds valid data for viewing.
-#
-# Returns true if:
-#   - Cache date matches today, OR
-#   - Cache is from yesterday AND current time is before sunrise (overnight)
-#
-# Arguments:
-#   $1 - JSON string (cache contents)
-#   $2 - sunrise_epoch (optional; if provided, uses actual sunrise)
-# Returns:
-#   0 (true)  if cache is usable for display
-#   1 (false) if stale, empty, or malformed
-#######################################
-moon_cache_is_fresh() {
-	local cache="$1"
-	local sunrise_epoch="${2:-0}"
-	local today yesterday cached_date now
-	today=$(date +"%d/%m/%Y")
-	yesterday=$(date -d "yesterday" +"%d/%m/%Y" 2>/dev/null || date -v-1d +"%d/%m/%Y" 2>/dev/null)
-	cached_date=$(jq -r '.date // ""' <<<"$cache" 2>/dev/null) || return 1
-	
-	# Fresh if today's date
-	if [[ "$cached_date" == "$today" ]]; then
-		return 0
-	fi
-	
-	# Check if overnight (before sunrise) and cache is from yesterday
-	if [[ "$cached_date" == "$yesterday" ]]; then
-		now=$(date +%s)
-		if (( sunrise_epoch > 0 && now < sunrise_epoch )); then
-			return 0
-		fi
-	fi
-
-	return 1
-}
-
 
 # -----------------------------------------------------------------------------
 # call_moon_api
@@ -575,299 +539,262 @@ call_moon_api() {
         | walk(if type == "number" or type == "boolean" then tostring else . end)
     ')
 
+    # ── Replace HH:MM strings with epoch integers ─────────────────────────────
+    # moonrise: always anchored to the response date.
+    # moonset:  same date normally; next day when moonset HH:MM < moonrise HH:MM
+    #           (midnight crossing).
+    local api_date moonrise_hhmm moonset_hhmm
+    api_date=$(echo "$response"      | jq -r '.date     // ""')
+    moonrise_hhmm=$(echo "$response" | jq -r '.moonrise // ""')
+    moonset_hhmm=$(echo "$response"  | jq -r '.moonset  // ""')
+
+    local norm_date norm_date_next moonrise_ep moonset_ep
+    norm_date=""
+    norm_date_next=""
+    moonrise_ep=0
+    moonset_ep=0
+
+    if [[ "$api_date" =~ ^[0-9]{2}/[0-9]{2}/[0-9]{4}$ ]]; then
+        norm_date=$(date -d "$(echo "$api_date" | awk -F/ '{print $3"-"$2"-"$1}')" +"%Y-%m-%d" 2>/dev/null)
+        norm_date_next=$(date -d "$norm_date + 1 day" +"%Y-%m-%d" 2>/dev/null)
+    fi
+
+    if [[ -n "$norm_date" ]]; then
+        moonrise_ep=$(hhmm_to_epoch "$norm_date" "$moonrise_hhmm")
+        moonrise_ep=${moonrise_ep:-0}
+
+        # Determine which date moonset belongs to:
+        # if moonset HH:MM < moonrise HH:MM → moonset is next calendar day
+        local moonset_date="$norm_date"
+        if [[ "$moonrise_hhmm" =~ ^[0-9]{1,2}:[0-9]{2}$ ]] && \
+           [[ "$moonset_hhmm"  =~ ^[0-9]{1,2}:[0-9]{2}$ ]]; then
+            local rise_mins set_mins
+            rise_mins=$(echo "$moonrise_hhmm" | awk -F: '{print $1*60+$2}')
+            set_mins=$(echo  "$moonset_hhmm"  | awk -F: '{print $1*60+$2}')
+            if (( set_mins < rise_mins )) && [[ -n "$norm_date_next" ]]; then
+                moonset_date="$norm_date_next"
+            fi
+        fi
+
+        moonset_ep=$(hhmm_to_epoch "$moonset_date" "$moonset_hhmm")
+        moonset_ep=${moonset_ep:-0}
+    fi
+
+    # Write epochs back into .moonrise / .moonset, replacing the HH:MM strings
+    response=$(echo "$response" | jq \
+        --argjson mrise "$moonrise_ep" \
+        --argjson mset  "$moonset_ep" \
+        '.moonrise = $mrise | .moonset = $mset')
+
     echo "$response"
 }
 
 #######################################
-# Fetch fresh moon data from astroapi and write it to MOON_DATA_FILE.
+# Fetch fresh moon data from astroapi and return validated JSON.
 #
 # Globals:
-#   MOON_API_KEY, MOON_API_URL, LAT, LON, TIMEZONE, MOON_DATA_FILE
+#   MOON_API_KEY, MOON_API_URL, LOCATION, TIMEZONE
 # Arguments:
-#   (none)
+#   $1 - needed_date in DD/MM/YYYY format
 # Outputs:
 #   Fresh JSON string on success, nothing on failure
 # Returns:
 #   0 on success, 1 on failure
 #######################################
 fetch_moon_data() {
-    local date_param time_param url response
-    date_param=$(date +"%d/%m/%Y")
+    local needed_date="$1"
+    local time_param
     time_param=$(date +"%H:%M")
+    call_moon_api "$needed_date" "$time_param"
+}
 
-	response=$(call_moon_api "$date_param" "$time_param")
-    echo "$response"
+#######################################
+# Write validated moon data to cache file.
+# Only writes if the fetched date matches the needed date.
+#
+# Arguments:
+#   $1 - fresh moon data JSON
+#   $2 - needed_date (DD/MM/YYYY)
+# Returns:
+#   0 always
+#######################################
+_save_moon_cache() {
+    local data="$1"
+    local needed_date="$2"
+    local fetched_date
+    fetched_date=$(jq -r '.date // ""' <<<"$data" 2>/dev/null)
+    [[ "$fetched_date" == "$needed_date" ]] || return 0
+    mkdir -p "$(dirname "$MOON_DATA_FILE")"
+    printf '%s\n' "$data" | jq '.' > "$MOON_DATA_FILE"
+}
+
+#######################################
+# Determine whether a date-matched moon cache entry needs refreshing.
+#
+# A cache is stale when both of the following are true:
+#   - We are inside the active lunar window (past moonrise, before moonset)
+# AND either:
+#   a) The cache was fetched before moonrise (position/illumination data stale), OR
+#   b) The cache has exceeded LUNAR_CACHE_MAX_AGE_HOURS since retrieval
+#
+# Arguments:
+#   $1 - cache JSON string
+#   $2 - now (epoch)
+#   $3 - moonset_epoch (0 if unknown)
+# Returns:
+#   0 (true)  if stale
+#   1 (false) if fresh or indeterminate
+#######################################
+_is_moon_cache_stale() {
+    local cache="$1"
+    local now="$2"
+    local moonset_epoch="$3"
+
+    local retrieved_at_epoch=0 cached_moonrise_epoch retrieved_at_str
+    retrieved_at_str=$(jq -r '.retrieved_at // ""' <<<"$cache" 2>/dev/null)
+    [[ -n "$retrieved_at_str" ]] && retrieved_at_epoch=$(date -d "$retrieved_at_str" +%s 2>/dev/null || echo 0)
+    cached_moonrise_epoch=$(jq -r '.moonrise // 0' <<<"$cache" 2>/dev/null)
+    cached_moonrise_epoch=${cached_moonrise_epoch:-0}
+
+    # Cannot determine staleness without fetch timestamp and moonrise
+    (( retrieved_at_epoch > 0 && cached_moonrise_epoch > 0 )) || return 1
+
+    # Only check staleness inside the active lunar window
+    (( now >= cached_moonrise_epoch )) || return 1
+    (( moonset_epoch == 0 || now < moonset_epoch )) || return 1
+
+    # (a) Fetched before moonrise — position/illumination data is pre-moonrise stale
+    if (( retrieved_at_epoch < cached_moonrise_epoch )); then
+        return 0
+    fi
+
+    # (b) Older than configured max age while still inside lunar window
+    local max_age_seconds=$(( LUNAR_CACHE_MAX_AGE_HOURS * 3600 ))
+    if (( moonset_epoch == 0 || retrieved_at_epoch < moonset_epoch )) && \
+       (( now - retrieved_at_epoch > max_age_seconds )); then
+        return 0
+    fi
+
+    return 1  # fresh
 }
 
 #######################################
 # Return current moon data — from cache if valid, otherwise fetched live.
 #
-# Handles overnight logic and ensures moon data is always current:
-# - Reuses cached data when it is still valid for the required date
-# - Forces refresh when the cached moonset has already passed
-# - Uses yesterday's data during overnight hours (before sunrise)
+# Date selection logic:
+#   If the cached moonset epoch is still in the future, the active lunar
+#   cycle belongs to whatever date the cache holds (today or yesterday for
+#   overnight midnight-crossings). Once moonset has passed, today's data
+#   is needed. This single rule replaces all explicit sunrise/overnight
+#   checks that were previously required.
 #
-# Refresh Logic:
-# 1. Load cache
-# 2. Determine required date:
-#    - If before sunrise → use yesterday's data
-#    - Otherwise → use today's data
+# Cache validation:
+#   When the cached date matches needed_date, staleness is checked via
+#   _is_moon_cache_stale. Fresh cache is returned immediately; stale cache
+#   triggers a targeted re-fetch for needed_date.
 #
-# 3. Validate cache:
-#    - If cached date matches required date → validate retrieved_at staleness
-#      (see step 3a); otherwise return cache immediately
-#    - If cached moonset has already passed → invalidate cache
-#
-# 3a. retrieved_at staleness refresh (post-moonrise, within lunar cycle):
-#    - If now is past sunrise (not overnight) and past moonrise, but retrieved_at
-#      predates moonrise, the cached position/illumination data is pre-moonrise
-#      stale. Fetch fresh data and update the cache.
-#    - The refresh is further gated to the active lunar cycle (now < moonset),
-#      so we never refresh after the moon has already set.
-#    - Skipped during overnight (now < sunrise) where needed_date is deliberately
-#      yesterday — refreshing then would fetch today's data and corrupt the
-#      overnight lunar cycle.
-#
-# 4. If cache is stale or invalid:
-#    a. Fetch fresh data from API
-#    b. Use overnight-aware API request when needed
-#    c. Update cache ONLY if:
-#       - Fetch is successful
-#       - Fetched date matches the required date
-#
-# 5. Fallback behavior:
-#    - If fetch fails → return existing cache (graceful degradation)
-#    - If no cache exists and fetch fails → return empty string
+# Fallback:
+#   On fetch failure the existing cache is returned as-is (graceful
+#   degradation). If no cache exists at all an empty string is returned.
 #
 # Globals:
-#   MOON_DATA_FILE, MOON_API_URL, MOON_API_KEY, LOCATION, TIMEZONE
-#
+#   MOON_DATA_FILE, MOON_API_URL, MOON_API_KEY, LOCATION, TIMEZONE,
+#   LUNAR_CACHE_MAX_AGE_HOURS
 # Arguments:
-#   $1 - sunrise_epoch (optional; used to determine overnight state)
-#
+#   (none)
 # Outputs:
 #   JSON string, or empty string on total failure
-#
 # Returns:
 #   0 always
 #######################################
 get_moon_data() {
-	local sunrise_epoch="${1:-0}"
-	local cache now cached_date needed_date moonset_epoch=0
+    local cache now today needed_date cached_date moonset_epoch
 
-	cache=$(load_moon_cache)
-	now=$(date +%s)
+    cache=$(load_moon_cache)
+    now=$(date +%s)
+    today=$(date +"%d/%m/%Y")
 
-	# Today's and yesterday's date
-	local today yesterday
-	today=$(date +"%d/%m/%Y")
-	yesterday=$(date -d "yesterday" +"%d/%m/%Y" 2>/dev/null || date -v-1d +"%d/%m/%Y" 2>/dev/null)
+    cached_date=$(jq -r '.date // ""' <<<"$cache" 2>/dev/null) || cached_date=""
+    moonset_epoch=$(jq -r '.moonset // 0' <<<"$cache" 2>/dev/null)
+    moonset_epoch=${moonset_epoch:-0}
 
-	# Extract cached date
-	cached_date=$(jq -r '.date // ""' <<<"$cache" 2>/dev/null) || cached_date=""
+    # Determine needed date:
+    # Active lunar cycle → keep the date the cache already holds (today or yesterday).
+    # Moonset past (or no usable cache) → need today's data.
+    if [[ -n "$cached_date" ]] && (( moonset_epoch > 0 && moonset_epoch > now )); then
+        needed_date="$cached_date"
+    else
+        needed_date="$today"
+    fi
 
-	# Extract moonset from cache (if exists)
-	if [[ -n "$cache" && "$cache" != "{}" ]]; then
-		local moonset_hhmm normalized_date
+    # Cache hit: date matches — return immediately or refresh if stale
+    if [[ "$cached_date" == "$needed_date" ]]; then
+        if ! _is_moon_cache_stale "$cache" "$now" "$moonset_epoch"; then
+            echo "$cache"
+            return 0
+        fi
 
-		moonset_hhmm=$(jq -r '.moonset // ""' <<<"$cache" 2>/dev/null)
+        # Stale — fetch fresh; fall back to existing cache on failure
+        local fresh
+        fresh=$(fetch_moon_data "$needed_date") || true
+        if [[ -n "$fresh" ]]; then
+            _save_moon_cache "$fresh" "$needed_date"
+            echo "$fresh"
+            return 0
+        fi
 
-		if [[ "$cached_date" =~ ^[0-9]{2}/[0-9]{2}/[0-9]{4}$ ]]; then
-			normalized_date=$(date -d "$(echo "$cached_date" | awk -F/ '{print $3"-"$2"-"$1}')" +"%Y-%m-%d" 2>/dev/null)
-			moonset_epoch=$(hhmm_to_epoch "$normalized_date" "$moonset_hhmm")
-		fi
-	fi
+        echo "$cache"
+        return 0
+    fi
 
-	# ─────────────────────────────────────────────
-	# DETERMINE NEEDED DATE (DATA-DRIVEN)
-	# ─────────────────────────────────────────────
-	if [[ "$cached_date" == "$yesterday" ]] && (( moonset_epoch > 0 && now < moonset_epoch )); then
-		# Still in yesterday's moon cycle
-		needed_date="$yesterday"
-	else
-		needed_date="$today"
-	fi
+    # Cache miss or wrong date — fetch fresh data for needed_date
+    local fresh
+    fresh=$(fetch_moon_data "$needed_date") || true
 
-	# ─────────────────────────────────────────────
-	# CACHE VALIDATION
-	# ─────────────────────────────────────────────
-	if [[ "$cached_date" == "$needed_date" ]]; then
-		# Cache date matches — but check if retrieved_at is stale relative to moonrise.
-		# Refresh if now is past moonrise but retrieved_at predates it, meaning the
-		# cache was fetched before the moon was up (position/illumination data stale).
-		#
-		# Safety boundary: skip during overnight (before sunrise) where needed_date
-		# is deliberately yesterday — refreshing then would fetch today's data and
-		# corrupt the overnight lunar cycle.
+    if [[ -n "$fresh" ]]; then
+        _save_moon_cache "$fresh" "$needed_date"
+        echo "$fresh"
+        return 0
+    fi
 
-		if (( sunrise_epoch > 0 && now >= sunrise_epoch )); then
-			local retrieved_at_epoch=0
-			local retrieved_at_str
-			retrieved_at_str=$(jq -r '.retrieved_at // ""' <<<"$cache" 2>/dev/null)
-			if [[ -n "$retrieved_at_str" ]]; then
-				retrieved_at_epoch=$(date -d "$retrieved_at_str" +%s 2>/dev/null || echo 0)
-			fi
+    # Complete failure — return existing cache or empty string
+    if [[ -n "$cache" && "$cache" != "{}" ]]; then
+        echo "$cache"
+        return 0
+    fi
 
-			# Resolve moonrise/moonset epochs from cached data
-			local normalized_needed_date cached_moonrise_hhmm cached_moonrise_epoch=0
-			if [[ "$cached_date" =~ ^[0-9]{2}/[0-9]{2}/[0-9]{4}$ ]]; then
-				normalized_needed_date=$(date -d "$(echo "$cached_date" | awk -F/ '{print $3"-"$2"-"$1}')" +"%Y-%m-%d" 2>/dev/null)
-				cached_moonrise_hhmm=$(jq -r '.moonrise // ""' <<<"$cache" 2>/dev/null)
-				cached_moonrise_epoch=$(hhmm_to_epoch "$normalized_needed_date" "$cached_moonrise_hhmm")
-				cached_moonrise_epoch=${cached_moonrise_epoch:-0}
-			fi
-
-			# ─────────────────────────────────────────────
-			# Cache freshness policy
-			# ─────────────────────────────────────────────
-			LUNAR_CACHE_MAX_AGE_SECONDS=$((LUNAR_CACHE_MAX_AGE_HOURS * 3600))
-
-			# Stale if:
-			# 1) retrieved before moonrise but now after moonrise (original logic)
-			# OR
-			# 2) inside lunar window AND older than configured max age (NEW logic)
-			if (( retrieved_at_epoch > 0 && cached_moonrise_epoch > 0 )); then
-
-				local stale_by_rise_logic=0
-				if (( now >= cached_moonrise_epoch && retrieved_at_epoch < cached_moonrise_epoch )) && \
-				(( moonset_epoch == 0 || now < moonset_epoch )); then
-					stale_by_rise_logic=1
-				fi
-
-				local stale_by_age=0
-				if (( now >= cached_moonrise_epoch )) && \
-				(( moonset_epoch == 0 || now < moonset_epoch )) && \
-				(( retrieved_at_epoch >= cached_moonrise_epoch )) && \
-				(( moonset_epoch == 0 || retrieved_at_epoch < moonset_epoch )) && \
-				(( now - retrieved_at_epoch > LUNAR_CACHE_MAX_AGE_SECONDS )); then
-					stale_by_age=1
-				fi
-
-				if (( stale_by_rise_logic == 1 || stale_by_age == 1 )); then
-					local refreshed_data
-					refreshed_data=$(fetch_moon_data) || refreshed_data=""
-					if [[ -n "$refreshed_data" ]]; then
-						local refreshed_date
-						refreshed_date=$(jq -r '.date // ""' <<<"$refreshed_data" 2>/dev/null)
-						if [[ "$refreshed_date" == "$needed_date" ]]; then
-							mkdir -p "$(dirname "$MOON_DATA_FILE")"
-							echo "$refreshed_data" | jq '.' > "$MOON_DATA_FILE"
-							echo "$refreshed_data"
-							return 0
-						fi
-					fi
-				fi
-			fi
-		fi
-
-		echo "$cache"
-		return 0
-	fi
-
-	# ─────────────────────────────────────────────
-	# FETCH FRESH DATA
-	# ─────────────────────────────────────────────
-	local fresh_data=""
-
-	if (( sunrise_epoch > 0 && now < sunrise_epoch )); then
-		# Overnight → explicit date fetch
-		local time_param url response
-
-		time_param=$(date +"%H:%M")
-
-		response=$(call_moon_api "$needed_date" "$time_param")
-
-		if [[ -n "$response" ]] && echo "$response" | jq -e '.moonrise' >/dev/null 2>&1; then
-			fresh_data="$response"
-		fi
-	else
-		# Daytime → normal fetch
-		fresh_data=$(fetch_moon_data) || fresh_data=""
-	fi
-
-	# ─────────────────────────────────────────────
-	# CACHE WRITE (ALWAYS ON SUCCESS)
-	# ─────────────────────────────────────────────
-	if [[ -n "$fresh_data" ]]; then
-		local fetched_date
-		fetched_date=$(jq -r '.date // ""' <<<"$fresh_data" 2>/dev/null)
-
-		# Safety: only store correct date
-		if [[ "$fetched_date" == "$needed_date" ]]; then
-			mkdir -p "$(dirname "$MOON_DATA_FILE")"
-			echo "$fresh_data" | jq '.' > "$MOON_DATA_FILE"
-		fi
-
-		echo "$fresh_data"
-		return 0
-	fi
-
-	# ─────────────────────────────────────────────
-	# FALLBACK
-	# ─────────────────────────────────────────────
-	if [[ -n "$cache" && "$cache" != "{}" ]]; then
-		echo "$cache"
-		return 0
-	fi
-
-	echo ""
+    echo ""
 }
 
 #######################################
 # Parse moonrise and moonset HH:MM strings from moon data JSON
-# and convert them to Unix epoch values, with date normalization.
+# and return the epoch integers stored in .moonrise / .moonset.
 #
-# Rejects non-time values (e.g. "Not visible") via hhmm_to_epoch.
-# Either value is 0 if absent, non-time, or unparseable.
-#
-# HANDLES MIDNIGHT CROSSING:
-# If moonset time parses successfully but is earlier than moonrise
-# (e.g., moonset 01:12 but moonrise 11:39), adds 86400 seconds (1 day)
-# to moonset_epoch to represent the next calendar day.
-#
-# OVERNIGHT DATA CORRECTION:
-# If cache date is yesterday (overnight viewing), shifts both times
-# backward by 86400 seconds to represent yesterday's times, ensuring
-# correct window comparison for current time.
+# Epochs are computed by call_moon_api at fetch time and stored directly
+# in .moonrise and .moonset, replacing the original HH:MM strings:
+#   .moonrise — epoch anchored to the API response date
+#   .moonset  — epoch on same date, or next day if moonset HH:MM
+#               < moonrise HH:MM (midnight crossing already resolved)
 #
 # Arguments:
 #   $1 - Moon data JSON string
+#   $2 - (unused, kept for call-site compatibility)
 # Outputs:
-#   Tab-separated: moonrise_epoch<TAB>moonset_epoch
+#   Tab-separated: moonrise_epoch (from .moonrise)<TAB>moonset_epoch (from .moonset)
 # Returns:
 #   0 always
 #######################################
 parse_moon_times() {
     local moon_data="$1"
-    local sunrise_epoch="${2:-0}"
+    # $2 (sunrise_epoch) kept in signature for call-site compatibility — not needed
+    # now that epochs are pre-computed and stored in the JSON.
 
-    local moonrise_hhmm moonset_hhmm
     local moonrise_epoch moonset_epoch
-    local cached_date normalized_date
+    moonrise_epoch=$(jq -r '.moonrise // 0' <<<"$moon_data" 2>/dev/null)
+    moonset_epoch=$(jq  -r '.moonset  // 0' <<<"$moon_data" 2>/dev/null)
 
-    # Extract values safely
-    moonrise_hhmm=$(jq -re '.moonrise // ""' <<<"$moon_data" 2>/dev/null)
-    moonset_hhmm=$(jq -re '.moonset // ""' <<<"$moon_data" 2>/dev/null)
-    cached_date=$(jq -re '.date // ""' <<<"$moon_data" 2>/dev/null)
-
-    # Convert DD/MM/YYYY → YYYY-MM-DD
-    if [[ "$cached_date" =~ ^[0-9]{2}/[0-9]{2}/[0-9]{4}$ ]]; then
-        normalized_date=$(date -d "$(echo "$cached_date" | awk -F/ '{print $3"-"$2"-"$1}')" +"%Y-%m-%d" 2>/dev/null)
-    else
-        normalized_date=""
-    fi
-
-    # Convert to epoch using API date (NOT system date)
-    moonrise_epoch=$(hhmm_to_epoch "$normalized_date" "$moonrise_hhmm")
     moonrise_epoch=${moonrise_epoch:-0}
-
-    moonset_epoch=$(hhmm_to_epoch "$normalized_date" "$moonset_hhmm")
     moonset_epoch=${moonset_epoch:-0}
-
-    # Handle midnight crossing (moonset is next day)
-    if (( moonrise_epoch > 0 && moonset_epoch > 0 && moonset_epoch < moonrise_epoch )); then
-        moonset_epoch=$(( moonset_epoch + 86400 ))
-    fi
 
     printf "%s\t%s\n" "$moonrise_epoch" "$moonset_epoch"
 }
@@ -885,10 +812,10 @@ parse_moon_times() {
 is_valid_moon_data() {
 	local moon_data="$1"
 	[[ -n "$moon_data" ]] || return 1
-	# Strict: only accept times in HH:MM format, reject "Not visible" etc.
+	# Valid if at least one pre-computed epoch is a positive integer
 	jq -e '(
-			(.moonrise | test("^[0-9]{1,2}:[0-9]{2}$|^[Nn]ot [Vv]isible$"; "i")) or
-			(.moonset  | test("^[0-9]{1,2}:[0-9]{2}$|^[Nn]ot [Vv]isible$"; "i"))
+			((.moonrise // 0) | type == "number" and . > 0) or
+			((.moonset  // 0) | type == "number" and . > 0)
 	)' <<<"$moon_data" >/dev/null 2>&1
 }
 
@@ -1591,7 +1518,7 @@ main() {
 	# Fetch moon data (with caching and graceful degradation)
 	local moon_data=""
 	if [[ "$MOON_PHASE_ENABLED" == "true" ]]; then
-		moon_data=$(get_moon_data "$sunrise_epoch") || moon_data=""
+		moon_data=$(get_moon_data) || moon_data=""
 	fi
 
 	# Build output
