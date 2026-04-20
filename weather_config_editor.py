@@ -213,7 +213,7 @@ SCHEMA: list[VarSchema] = [
     VarSchema("SHOW_MOONPHASE_DURING_DAYTIME",       "Show During Daytime",        VarType.BOOLEAN,
               "Display moon phase regardless of daylight hours", readonly=True,
               group="Moon Phase"),
-    VarSchema("SUPPRESS_MOONPHASE_NOT_VISIBLE", "Suppress Non-Visible Moon Phases", VarType.BOOLEAN,
+    VarSchema("SUPPRESS_NOT_VISIBLE_MOONPHASE", "Suppress Non-Visible Moon Phases", VarType.BOOLEAN,
           "Suppress moon phase display when the moon is too dim to be visible", 
           readonly=True, group="Moon Phase"),
     VarSchema("MOON_PHASE_SHOW_DURING_RAIN",       "Show While Raining",           VarType.BOOLEAN,

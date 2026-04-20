@@ -79,7 +79,7 @@ load_or_create_config
 : "${SHOW_MOONRISE_MOONSET_DURING_DAYTIME:=false}"
 : "${SHOW_LUNAR_APSIDAL_SYZYGY:=false}"
 : "${ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY:=false}"
-: "${SUPPRESS_MOONPHASE_NOT_VISIBLE:=false}"
+: "${SUPPRESS_NOT_VISIBLE_MOONPHASE:=false}"
 
 # ─── Validate Required Credentials ────────────────────────────────────────────
 if [[ -z "${MOON_API_KEY:-}" ]] && [[ "${MOON_PHASE_ENABLED}" == "true" ]]; then
@@ -1175,7 +1175,7 @@ resolve_window_end() {
 # 3. Moon is visible (between moonrise and moonset, lunar window)
 # 4. Current time is within display window (configured start/end)
 # 5. Not suppressed by rain conditions
-# 6. Not suppressed by SUPPRESS_MOONPHASE_NOT_VISIBLE (if enabled)
+# 6. Not suppressed by SUPPRESS_NOT_VISIBLE_MOONPHASE (if enabled)
 #
 # Window Calculation:
 # Solar Window: effective_sunset_epoch (Day N) → effective_sunrise_epoch (Day N+1)
@@ -1190,7 +1190,7 @@ resolve_window_end() {
 # Globals:
 #   MOON_PHASE_ENABLED, MOON_PHASE_WINDOW_START, MOON_PHASE_WINDOW_DURATION,
 #   MOON_PHASE_SHOW_DURING_RAIN, MOON_PHASE_SHOW_WITH_RAIN_FORECAST,
-#   SUPPRESS_MOONPHASE_NOT_VISIBLE
+#   SUPPRESS_NOT_VISIBLE_MOONPHASE
 # Arguments:
 #   $1 - effective_sunset_epoch  (yesterday's if overnight, today's otherwise)
 #   $2 - effective_sunrise_epoch (tomorrow's if past today's sunrise)
@@ -1294,7 +1294,7 @@ resolve_moon_phase() {
 	fi
 
 	# 10. Suppress moon phase if moon is not visible (day or night).
-	if [[ "$SUPPRESS_MOONPHASE_NOT_VISIBLE" == "true" ]]; then
+	if [[ "$SUPPRESS_NOT_VISIBLE_MOONPHASE" == "true" ]]; then
 		local illumination_pct
 		illumination_pct=$(parse_illumination_pct "$moon_data")
 

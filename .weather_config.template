@@ -79,7 +79,7 @@ readonly MOON_PHASE_WINDOW_DURATION="moonset"
 # true → display moon phase regardless of daylight hours
 readonly SHOW_MOONPHASE_DURING_DAYTIME=false
 # Suppress moon phase display when the moon is too dim to be visible
-readonly SUPPRESS_MOONPHASE_NOT_VISIBLE=true
+readonly SUPPRESS_NOT_VISIBLE_MOONPHASE=true
 # true → display even when it's currently raining; false → suppress during active rain
 readonly MOON_PHASE_SHOW_DURING_RAIN=true
 # true → display even when rain is in the forecast; false → suppress when rain expected
