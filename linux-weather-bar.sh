@@ -59,28 +59,40 @@ load_or_create_config
 
 # ─── Set Configuration Defaults (for set -u safety) ────────────────────────────
 : "${API_KEY_TYPE:=FREE}"
+: "${FEELS_LIKE_THRESHOLD:=5}"
+: "${SHOW_RAIN_FORECAST:=true}"
+: "${RAIN_FORECAST_THRESHOLD:=0.80}"
+: "${RAIN_FORECAST_WINDOW:=2}"
+
+# ─── Sunrise & Sunset ─────────────────────────────────────────────────────────
 : "${SHOW_SUNRISE_SUNSET:=true}"
+: "${SUNRISE_WARNING_THRESHOLD:=45}"
+: "${SUNSET_WARNING_THRESHOLD:=45}"
 : "${SHOW_SUNRISE_SUNSET_DURING_RAIN:=true}"
 : "${SHOW_SUNRISE_SUNSET_WITH_RAIN_FORECAST:=true}"
-: "${MOON_PHASE_ENABLED:=false}"
+
+# ─── Moonrise & Moonset ───────────────────────────────────────────────────────
+: "${SHOW_MOONRISE_MOONSET:=true}"
+: "${MOONRISE_WARNING_THRESHOLD:=45}"
+: "${MOONSET_WARNING_THRESHOLD:=45}"
+: "${SHOW_MOONRISE_MOONSET_DURING_DAYTIME:=false}"
+: "${SUPPRESS_NOT_VISIBLE_MOONRISE_MOONSET:=false}"
+: "${SHOW_MOONRISE_MOONSET_DURING_RAIN:=true}"
+: "${SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST:=false}"
+
+# ─── Moon Phase ───────────────────────────────────────────────────────────────
+: "${MOON_PHASE_ENABLED:=true}"
 : "${LUNAR_CACHE_MAX_AGE_HOURS:=2}"
-: "${MOON_PHASE_WINDOW_START:=1}"
-: "${MOON_PHASE_WINDOW_DURATION:=60}"
+: "${MOON_PHASE_WINDOW_START:=moonrise}"
+: "${MOON_PHASE_WINDOW_DURATION:=moonset}"
 : "${SHOW_MOONPHASE_DURING_DAYTIME:=false}"
+: "${SUPPRESS_NOT_VISIBLE_MOONPHASE:=false}"
 : "${MOON_PHASE_SHOW_DURING_RAIN:=true}"
 : "${MOON_PHASE_SHOW_WITH_RAIN_FORECAST:=false}"
 : "${SHOW_MOONPHASE_BENGALI:=false}"
 : "${SHOW_MOONPHASE_BILINGUAL:=false}"
-: "${SHOW_MOONRISE_MOONSET:=false}"
-: "${MOONRISE_WARNING_THRESHOLD:=20}"
-: "${MOONSET_WARNING_THRESHOLD:=30}"
-: "${SHOW_MOONRISE_MOONSET_DURING_RAIN:=false}"
-: "${SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST:=false}"
-: "${SHOW_MOONRISE_MOONSET_DURING_DAYTIME:=false}"
-: "${SHOW_LUNAR_APSIDAL_SYZYGY:=false}"
+: "${SHOW_LUNAR_APSIDAL_SYZYGY:=true}"
 : "${ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY:=false}"
-: "${SUPPRESS_NOT_VISIBLE_MOONPHASE:=false}"
-: "${SUPPRESS_NOT_VISIBLE_MOONRISE_MOONSET:=false}"
 
 # ─── Validate Required Credentials ────────────────────────────────────────────
 if [[ -z "${MOON_API_KEY:-}" ]] && [[ "${MOON_PHASE_ENABLED}" == "true" ]]; then

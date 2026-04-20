@@ -63,7 +63,7 @@ readonly SUPPRESS_NOT_VISIBLE_MOONRISE_MOONSET=false
 # true → display even when it's currently raining; false → suppress during active rain
 readonly SHOW_MOONRISE_MOONSET_DURING_RAIN=true
 # true → display even when rain is in the forecast; false → suppress when rain expected
-readonly SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST=true
+readonly SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST=false
 
 # ─── Moon Phase ───────────────────────────────────────────────────────────────
 # Show the current moon phase
@@ -85,7 +85,7 @@ readonly SUPPRESS_NOT_VISIBLE_MOONPHASE=true
 # true → display even when it's currently raining; false → suppress during active rain
 readonly MOON_PHASE_SHOW_DURING_RAIN=true
 # true → display even when rain is in the forecast; false → suppress when rain expected
-readonly MOON_PHASE_SHOW_WITH_RAIN_FORECAST=true
+readonly MOON_PHASE_SHOW_WITH_RAIN_FORECAST=false
 # true → show phase name in Bengali only
 readonly SHOW_MOONPHASE_BENGALI=false
 # true → show phase name in both English and Bengali (overrides SHOW_MOONPHASE_BENGALI)
