@@ -2036,6 +2036,15 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 k: e.raw_value for k, e in self._entries.items()}
             self._update_button_states()
 
+            # Reload the Moon Data group from disk (moon-data.json), replacing
+            # the existing group in-place without touching any other groups.
+            new_moon_group = self._build_moon_data_section()
+            if self._moon_data_group and self._moon_data_group.get_parent():
+                self._groups_box.insert_child_after(
+                    new_moon_group, self._moon_data_group)
+                self._groups_box.remove(self._moon_data_group)
+            self._moon_data_group = new_moon_group
+
         except subprocess.CalledProcessError as exc:
             self._show_error(f"Extension reload failed:\n{exc}")
 
