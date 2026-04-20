@@ -211,7 +211,7 @@ GUI exposes all advanced lunar features:
 
 ---
 
-### 📊 Moon Data Awareness
+### Moon Data Awareness
 
 The config system is tightly integrated with:
 
