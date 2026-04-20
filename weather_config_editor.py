@@ -199,8 +199,8 @@ SCHEMA: list[VarSchema] = [
     # ── Moon Phase ────────────────────────────────────────────────────────────
     VarSchema("MOON_PHASE_ENABLED",               "Moon Phase",                    VarType.BOOLEAN,
               "Show the current moon phase", readonly=True, group="Moon Phase"),
-    VarSchema("LUNAR_CACHE_MAX_AGE_HOURS",                "Lunar Cache Max Age",              VarType.INTEGER,
-              "Maximum age of cached lunar data in hours", default=2, readonly=True,
+    VarSchema("LUNAR_CACHE_MAX_AGE_HOURS",                "Moon Data Cache Max Age",              VarType.INTEGER,
+              "Maximum age of cached moon data in hours during active moon window", default=2, readonly=True,
               group="Moon Phase"),
     VarSchema("MOON_PHASE_WINDOW_START",           "Display Window Start",         VarType.MOON_WINDOW,
               "Minutes after sunset to begin display, or from moonrise",
