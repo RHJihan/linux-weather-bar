@@ -32,7 +32,7 @@ import threading
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum, auto
 from pathlib import Path
@@ -1259,9 +1259,6 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._save_btn.set_sensitive(has_changes)
         self._undo_btn.set_sensitive(bool(self._undo_stack))
 
-    def _update_save_button(self) -> None:
-        self._update_button_states()
-
     # ── UI Construction ───────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
@@ -1433,10 +1430,6 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         try:
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
         except Exception:
-            pass
-        try:
-            return datetime.strptime(value, "%H:%M")
-        except Exception:
             return None
 
     @staticmethod
@@ -1456,11 +1449,11 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             except Exception:
                 return text
         if key in ("moonrise", "moonset"):
-            dt = WeatherConfigWindow._parse_moon_dt(text)
-            if dt:
-                parts = dt.strftime("%I:%M %p").split(" ")
-                return f"{parts[0]} {parts[1].upper()}"
-            return text
+            try:
+                dt = datetime.fromtimestamp(int(float(text)))
+                return dt.strftime("%I:%M %p").upper()
+            except (ValueError, TypeError):
+                return text
         if key == "retrieved_at":
             dt = WeatherConfigWindow._parse_moon_dt(text)
             if dt:
@@ -1584,13 +1577,13 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             # Sunset time is read from sun-data.json (unix timestamp); nightfall is
             # sunset + 60 min. Falls back to 19:00 / 20:00 if file is unavailable.
             try:
-                def _hhmm(s: str) -> int:
-                    """Return minutes since midnight for a 'HH:MM[-like]' string."""
-                    h, m = s.split(":")
-                    return int(h) * 60 + int(m)
+                def _epoch_to_mins(s: str) -> int:
+                    """Convert unix epoch string to local minutes since midnight."""
+                    dt = datetime.fromtimestamp(int(float(s)))
+                    return dt.hour * 60 + dt.minute
 
-                moonset_min = _hhmm(moonset_str)
-                moonrise_min = _hhmm(moonrise_str)
+                moonset_min = _epoch_to_mins(moonset_str)
+                moonrise_min = _epoch_to_mins(moonrise_str)
 
                 sun_data = WeatherConfigWindow._load_sun_data()
                 sunset_min = WeatherConfigWindow._sunset_local_minutes(
@@ -1613,6 +1606,59 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             return None
 
         return ". ".join(alerts)
+
+    @staticmethod
+    def _inject_moon_epochs(data: dict[str, Any]) -> None:
+        """
+        Replace moonrise and moonset HH:MM strings with Unix epoch integers in-place.
+
+        Uses the API response date (DD/MM/YYYY) as the base for both times.
+        If moonset HH:MM < moonrise HH:MM (midnight crossing), moonset is anchored
+        to the following calendar day — mirroring the bash call_moon_api logic.
+        No-ops on fields that are already integers or not in HH:MM format.
+        """
+        _HHMM_RE = re.compile(r'^\d{1,2}:\d{2}$')
+
+        def _parse_date(raw: str) -> Optional[tuple[int, int, int]]:
+            try:
+                d, m, y = raw.strip().split("/")
+                return int(y), int(m), int(d)
+            except Exception:
+                return None
+
+        def _hhmm_to_mins(hhmm: str) -> int:
+            h, m = map(int, hhmm.split(":"))
+            return h * 60 + m
+
+        def _build_epoch(year: int, month: int, day: int, hhmm: str) -> int:
+            h, m = map(int, hhmm.split(":"))
+            return int(datetime(year, month, day, h, m).timestamp())
+
+        api_date = str(data.get("date", "")).strip()
+        moonrise_raw = str(data.get("moonrise", "")).strip()
+        moonset_raw = str(data.get("moonset", "")).strip()
+
+        ymd = _parse_date(api_date)
+        if ymd is None:
+            return
+
+        year, month, day = ymd
+
+        if not _HHMM_RE.match(moonrise_raw):
+            return  # already an epoch integer or unrecognised — leave untouched
+
+        moonrise_ep = _build_epoch(year, month, day, moonrise_raw)
+        data["moonrise"] = moonrise_ep
+
+        if _HHMM_RE.match(moonset_raw):
+            # Midnight-crossing: if moonset time-of-day is earlier than moonrise,
+            # the moon sets on the next calendar day.
+            if _hhmm_to_mins(moonset_raw) < _hhmm_to_mins(moonrise_raw):
+                next_day = datetime(year, month, day) + timedelta(days=1)
+                data["moonset"] = _build_epoch(
+                    next_day.year, next_day.month, next_day.day, moonset_raw)
+            else:
+                data["moonset"] = _build_epoch(year, month, day, moonset_raw)
 
     def _call_moon_api(self) -> dict[str, Any]:
         """Fetch moon data from astroapi.byhrast.com using values from the loaded config."""
@@ -1646,7 +1692,6 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Network error: {exc.reason}") from exc
 
-        data = json.loads(raw)
         data = json.loads(raw, parse_float=Decimal)
 
         if "moonrise" not in data:
@@ -1654,6 +1699,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         data["retrieved_at"] = datetime.now(
         ).astimezone().isoformat(timespec="seconds")
+        self._inject_moon_epochs(data)
         return data
 
     def _on_moon_update_clicked(self, btn: Gtk.Button) -> None:
