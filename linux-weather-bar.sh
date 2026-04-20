@@ -80,6 +80,7 @@ load_or_create_config
 : "${SHOW_LUNAR_APSIDAL_SYZYGY:=false}"
 : "${ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY:=false}"
 : "${SUPPRESS_NOT_VISIBLE_MOONPHASE:=false}"
+: "${SUPPRESS_NOT_VISIBLE_MOONRISE_MOONSET:=false}"
 
 # ─── Validate Required Credentials ────────────────────────────────────────────
 if [[ -z "${MOON_API_KEY:-}" ]] && [[ "${MOON_PHASE_ENABLED}" == "true" ]]; then
@@ -1449,8 +1450,18 @@ build_weather_line() {
 				is_daytime=true
 			fi
 
+			# Suppress moonrise/moonset when moon is too dim to be visible,
+			local _suppress_moonrise_moonset=false
+			if [[ "$SUPPRESS_NOT_VISIBLE_MOONRISE_MOONSET" == "true" ]] && [[ -n "$moon_data" ]]; then
+				local _illumination_pct
+				_illumination_pct=$(parse_illumination_pct "$moon_data")
+				if is_moon_too_dim "$_illumination_pct"; then
+					_suppress_moonrise_moonset=true
+				fi
+			fi
+
 			# Moonrise announcement
-			if (( _moonrise_epoch > 0 && now < _moonrise_epoch)); then
+			if [[ "$_suppress_moonrise_moonset" != "true" ]] && (( _moonrise_epoch > 0 && now < _moonrise_epoch)); then
 				if [[ "$is_daytime" == "true" ]] && [[ "$SHOW_MOONRISE_MOONSET_DURING_DAYTIME" != "true" ]]; then
 					:
 				elif [[ "$MOONRISE_WARNING_THRESHOLD" == "sunset" ]]; then
@@ -1473,7 +1484,7 @@ build_weather_line() {
 			fi
 
 			# Moonset announcement
-			if (( _moonset_epoch > 0 && now < _moonset_epoch )); then
+			if [[ "$_suppress_moonrise_moonset" != "true" ]] && (( _moonset_epoch > 0 && now < _moonset_epoch )); then
 				if [[ "$is_daytime" == "true" ]] && [[ "$SHOW_MOONRISE_MOONSET_DURING_DAYTIME" != "true" ]]; then
 					:
 				else
