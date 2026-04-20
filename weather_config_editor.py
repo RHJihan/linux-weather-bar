@@ -12,7 +12,7 @@ environment variables of a weather + astronomical system.
 # [Desktop Entry]
 # Name=Weather Config Editor
 # Comment=Edit weather & astronomical configuration
-# Exec=sh -c 'GSETTINGS_SCHEMA_DIR="$HOME/.local/share/bin" python3 "$HOME/.local/share/bin/weather_config_editor.py"'
+# Exec=sh -c 'GSETTINGS_SCHEMA_DIR="$HOME/.local/share/bin/linux-weather-bar" python3 "$HOME/.local/share/bin/linux-weather-bar/weather_config_editor.py"'
 # Icon=preferences-system
 # Terminal=false
 # Type=Application
@@ -71,7 +71,8 @@ class VarSchema:
     sentinel_value: str = ""                                   # e.g. "moonrise"
     group: str = "General"
     readonly: bool = False                                     # bash `readonly`
-    secret: bool = False                                       # mask when unfocused
+    # mask when unfocused
+    secret: bool = False
 
 
 @dataclass
@@ -96,6 +97,7 @@ class ConfigEntry:
         quoted = len(v) >= 2 and v[0] == v[-1] == '"'
         self.raw_value = f'"{val}"' if quoted else val
         self.modified = True
+
 
 DEPENDENCIES: dict[str, list[str]] = {
     "SHOW_SUNRISE_SUNSET": [
@@ -130,7 +132,7 @@ DEPENDENCIES: dict[str, list[str]] = {
         "SHOW_MOONRISE_MOONSET_DURING_RAIN",
         "SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST",
     ],
-        "SHOW_MOONPHASE_BILINGUAL": [
+    "SHOW_MOONPHASE_BILINGUAL": [
         "SHOW_MOONPHASE_BENGALI",
     ],
 }
@@ -145,29 +147,29 @@ INVERSE_DEPENDENCIES: set[str] = {
 SCHEMA: list[VarSchema] = [
     # ── Configuration ───────────────────────────────────────────────────
     VarSchema("FEELS_LIKE_THRESHOLD",      "Feels-Like Offset",        VarType.INTEGER,
-            "Show 'feels like' when it differs by this many °C", default=10, readonly=True,
-            group="Configuration"),
+              "Show 'feels like' when it differs by this many °C", default=10, readonly=True,
+              group="Configuration"),
     VarSchema("SHOW_RAIN_FORECAST",        "Rain Forecast",            VarType.BOOLEAN,
-            "Show rain warnings in the forecast", readonly=True, group="Configuration"),
+              "Show rain warnings in the forecast", readonly=True, group="Configuration"),
     VarSchema("RAIN_FORECAST_THRESHOLD",   "Rain Chance Cutoff",       VarType.FLOAT,
-            "Minimum probability (0–100%) to trigger a warning",
-            default=0.7, readonly=True, group="Configuration"),
+              "Minimum probability (0–100%) to trigger a warning",
+              default=0.7, readonly=True, group="Configuration"),
     VarSchema("RAIN_FORECAST_WINDOW",      "Forecast Lookahead",       VarType.INTEGER,
-            "How many hours ahead to check for rain", default=2, readonly=True,
-            group="Configuration"),
+              "How many hours ahead to check for rain", default=2, readonly=True,
+              group="Configuration"),
 
     # ── Sunrise & Sunset ────────────────────────────────────────────────
     VarSchema("SHOW_SUNRISE_SUNSET",       "Sunrise &amp; Sunset",         VarType.BOOLEAN,
-            "Show sunrise and sunset times", readonly=True,
-            group="Sunrise &amp; Sunset"),
+              "Show sunrise and sunset times", readonly=True,
+              group="Sunrise &amp; Sunset"),
 
     VarSchema("SUNRISE_WARNING_THRESHOLD", "Sunrise Lead Time",        VarType.INTEGER,
-            "Alert this many minutes before sunrise", default=30, readonly=True,
-            group="Sunrise &amp; Sunset"),
+              "Alert this many minutes before sunrise", default=30, readonly=True,
+              group="Sunrise &amp; Sunset"),
 
     VarSchema("SUNSET_WARNING_THRESHOLD",  "Sunset Lead Time",         VarType.INTEGER,
-            "Alert this many minutes before sunset", default=30, readonly=True,
-            group="Sunrise &amp; Sunset"),
+              "Alert this many minutes before sunset", default=30, readonly=True,
+              group="Sunrise &amp; Sunset"),
     VarSchema("SHOW_SUNRISE_SUNSET_DURING_RAIN",        "Show While Raining",       VarType.BOOLEAN,
               "Display even when it's currently raining", readonly=True,
               group="Sunrise &amp; Sunset"),
@@ -189,8 +191,8 @@ SCHEMA: list[VarSchema] = [
               "Include moonrise/moonset times that fall during daylight", readonly=True,
               group="Moonrise &amp; Moonset"),
     VarSchema("SUPPRESS_NOT_VISIBLE_MOONRISE_MOONSET", "Suppress Non-Visible Moonrise/Moonset", VarType.BOOLEAN,
-          "Suppress moonrise/moonset display when the moon is too dim to be visible", 
-          readonly=True, group="Moonrise &amp; Moonset"),
+              "Suppress moonrise/moonset display when the moon is too dim to be visible",
+              readonly=True, group="Moonrise &amp; Moonset"),
     VarSchema("SHOW_MOONRISE_MOONSET_DURING_RAIN",        "Show While Raining",             VarType.BOOLEAN,
               "Display even when it's currently raining", readonly=True,
               group="Moonrise &amp; Moonset"),
@@ -217,12 +219,12 @@ SCHEMA: list[VarSchema] = [
               "Display moon phase regardless of daylight hours", readonly=True,
               group="Moon Phase"),
     VarSchema("SUPPRESS_NOT_VISIBLE_MOONPHASE", "Suppress Non-Visible Moon Phases", VarType.BOOLEAN,
-          "Suppress moon phase display when the moon is too dim to be visible", 
-          readonly=True, group="Moon Phase"),
+              "Suppress moon phase display when the moon is too dim to be visible",
+              readonly=True, group="Moon Phase"),
     VarSchema("MOON_PHASE_SHOW_DURING_RAIN",       "Show While Raining",           VarType.BOOLEAN,
               "Display even when it's currently raining", readonly=True,
               group="Moon Phase"),
-    VarSchema("MOON_PHASE_SHOW_WITH_RAIN_FORECAST","Show When Rain Expected",      VarType.BOOLEAN,
+    VarSchema("MOON_PHASE_SHOW_WITH_RAIN_FORECAST", "Show When Rain Expected",      VarType.BOOLEAN,
               "Display even when rain is in the forecast", readonly=True,
               group="Moon Phase"),
     VarSchema("SHOW_MOONPHASE_BILINGUAL",           "Bilingual Phase Name",        VarType.BOOLEAN,
@@ -231,11 +233,11 @@ SCHEMA: list[VarSchema] = [
     VarSchema("SHOW_MOONPHASE_BENGALI",             "Bengali Phase Name",          VarType.BOOLEAN,
               "Show phase name in Bengali only", readonly=True, group="Moon Phase"),
     VarSchema("SHOW_LUNAR_APSIDAL_SYZYGY",             "Apsidal Syzygy Label",          VarType.BOOLEAN,
-          "Show supermoon, super new moon, or micromoon label when applicable",
-          readonly=True, group="Moon Phase"),
+              "Show supermoon, super new moon, or micromoon label when applicable",
+              readonly=True, group="Moon Phase"),
     VarSchema("ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY", "Restrict Syzygy Label to Night Visibility", VarType.BOOLEAN,
-          "Only show the syzygy label when the moon is visibly above the horizon at night", 
-          readonly=True, group="Moon Phase"),
+              "Only show the syzygy label when the moon is visibly above the horizon at night",
+              readonly=True, group="Moon Phase"),
 
     # ── API Keys ──────────────────────────────────────────────────────────────
     VarSchema("API_KEY",       "OpenWeatherMap API Key",              VarType.STRING,
@@ -431,14 +433,18 @@ class ConfigParser:
             if not m:
                 continue
             key = m.group("key")
-            val = m.group("value").split("#")[0].strip()   # strip inline comment
+            val = m.group("value").split(
+                "#")[0].strip()   # strip inline comment
             if key in SCHEMA_MAP:
-                entries[key] = ConfigEntry(schema=SCHEMA_MAP[key], raw_value=val)
+                entries[key] = ConfigEntry(
+                    schema=SCHEMA_MAP[key], raw_value=val)
         # Fill missing keys with defaults
         for schema in SCHEMA:
             if schema.key not in entries:
-                default = str(schema.default) if schema.default is not None else ""
-                entries[schema.key] = ConfigEntry(schema=schema, raw_value=default)
+                default = str(
+                    schema.default) if schema.default is not None else ""
+                entries[schema.key] = ConfigEntry(
+                    schema=schema, raw_value=default)
         return entries
 
     def save(self, path: Path, entries: dict[str, ConfigEntry]) -> None:
@@ -602,21 +608,21 @@ class FloatRow(BaseRow):
     def __init__(self, entry: ConfigEntry,
                  on_change: Callable[[ConfigEntry], None]) -> None:
         super().__init__(entry, on_change)
-        
+
         # Adjustment for 0.0 to 1.0 range
         adj = Gtk.Adjustment(value=self._safe_float(),
                              lower=0.0, upper=1.0,
                              step_increment=0.05, page_increment=0.1)
         self._spin = Gtk.SpinButton(adjustment=adj, digits=2)
         self._spin.set_valign(Gtk.Align.CENTER)
-        
+
         # 1. Handle numeric changes (mouse clicks, arrow keys, wheel)
         self._spin.connect("value-changed", self._on_value_changed)
-        
+
         # 2. Handle typing changes (keystrokes)
         # We connect to 'changed' but do NOT call .update() here to prevent cursor jumping.
         self._spin.connect("changed", self._on_text_changed)
-        
+
         self.add_suffix(self._spin)
         self.set_activatable_widget(self._spin)
 
@@ -700,7 +706,9 @@ class EnumRow(BaseRow):
     def reset(self) -> None:
         choices = self.entry.schema.choices
         cur = self.entry.display_value
-        self._dropdown.set_selected(choices.index(cur) if cur in choices else 0)
+        self._dropdown.set_selected(
+            choices.index(cur) if cur in choices else 0)
+
 
 class LocationRow(BaseRow):
     """
@@ -711,8 +719,8 @@ class LocationRow(BaseRow):
     """
 
     def __init__(self, entry: ConfigEntry,
-                on_change: Callable[[ConfigEntry], None],
-                ip_store: "IpMappingStore") -> None:
+                 on_change: Callable[[ConfigEntry], None],
+                 ip_store: "IpMappingStore") -> None:
         super().__init__(entry, on_change)
 
         self._ip_store = ip_store
@@ -729,7 +737,8 @@ class LocationRow(BaseRow):
         self._dropdown.connect("notify::selected", self._on_dropdown_selected)
 
         # Manual lat/lon (inline, hidden by default)
-        self._manual_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        self._manual_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
         self._manual_box.set_valign(Gtk.Align.CENTER)
         self._manual_box.set_hexpand(True)
 
@@ -936,7 +945,8 @@ class TimezoneRow(BaseRow):
         self._filter.set_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
         self._filter.set_ignore_case(True)
 
-        filtered_model = Gtk.FilterListModel.new(self._string_list, self._filter)
+        filtered_model = Gtk.FilterListModel.new(
+            self._string_list, self._filter)
 
         # SingleSelection wraps the filtered model for DropDown
         selection = Gtk.SingleSelection.new(filtered_model)
@@ -954,7 +964,8 @@ class TimezoneRow(BaseRow):
         self._dropdown.set_valign(Gtk.Align.CENTER)
 
         # Wait for the DropDown's internal search entry to appear, then wire it up
-        self._dropdown.connect("notify::selected-item", self._on_dropdown_selected)
+        self._dropdown.connect("notify::selected-item",
+                               self._on_dropdown_selected)
 
         # We also need a plain entry so the user can type freely and see
         # validation feedback; the DropDown's search field handles filtering.
@@ -1090,7 +1101,6 @@ class TimezoneRow(BaseRow):
             self._entry.set_text(val)
 
 
-
 class MoonWindowRow(BaseRow):
     """
     Special row for MOON_WINDOW variables.
@@ -1206,7 +1216,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         if changed_key not in DEPENDENCIES:
             return
 
-        master_value = self._entries[changed_key].display_value.lower() == "true"
+        master_value = self._entries[changed_key].display_value.lower(
+        ) == "true"
 
         if changed_key in INVERSE_DEPENDENCIES:
             master_value = not master_value  # true → disable dependents
@@ -1227,8 +1238,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._rows: dict[str, BaseRow] = {}
         self._search_text: str = ""
         self._undo_stack: list[tuple[str, str]] = []   # (key, old_raw_value)
-        self._original_values: dict[str, str] = {}     # key → raw_value at load time
-        self._moon_value_labels: dict[str, Gtk.Label] = {}  # for in-place Moon Data refresh
+        # key → raw_value at load time
+        self._original_values: dict[str, str] = {}
+        # for in-place Moon Data refresh
+        self._moon_value_labels: dict[str, Gtk.Label] = {}
         self._moon_data_group: Optional[Adw.PreferencesGroup] = None
 
         self._build_ui()
@@ -1308,7 +1321,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         scroll.set_vexpand(True)
         toolbar_view.set_content(scroll)
 
-        self._main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._main_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self._main_box.set_margin_top(24)
         self._main_box.set_margin_bottom(24)
         self._main_box.set_margin_start(24)
@@ -1333,10 +1347,12 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._main_box.append(self._path_label)
 
         # Groups container
-        self._groups_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        self._groups_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self._main_box.append(self._groups_box)
 
-        self._group_widgets: dict[str, tuple[Adw.PreferencesGroup, list[BaseRow]]] = {}
+        self._group_widgets: dict[str,
+                                  tuple[Adw.PreferencesGroup, list[BaseRow]]] = {}
 
     # ── Moon Data helpers ─────────────────────────────────────────────────────
 
@@ -1377,11 +1393,11 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             if isinstance(value, str):
                 import json as _json
                 value = _json.loads(value)
-            az_rad  = float(str(value.get("azimuth", 0)))
+            az_rad = float(str(value.get("azimuth", 0)))
             alt_rad = float(str(value.get("altitude", 0)))
 
             import math
-            az_deg  = math.degrees(az_rad) % 360
+            az_deg = math.degrees(az_rad) % 360
             alt_deg = math.degrees(alt_rad)
 
             # Cardinal / intercardinal direction from azimuth
@@ -1516,7 +1532,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
           • Not visible at night – low illumination OR moon down before sunset
         """
         phase = str(data.get("phase", "")).strip()
-        illumination_raw = str(data.get("illumination", "0")).replace("%", "").strip()
+        illumination_raw = str(
+            data.get("illumination", "0")).replace("%", "").strip()
         try:
             illumination = float(illumination_raw)
         except ValueError:
@@ -1534,7 +1551,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             distance_km = None
 
         moonrise_str = str(data.get("moonrise", "")).strip()
-        moonset_str  = str(data.get("moonset", "")).strip()
+        moonset_str = str(data.get("moonset", "")).strip()
 
         is_new_or_full = phase in ("New Moon", "Full Moon")
 
@@ -1572,16 +1589,17 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                     h, m = s.split(":")
                     return int(h) * 60 + int(m)
 
-                moonset_min  = _hhmm(moonset_str)
+                moonset_min = _hhmm(moonset_str)
                 moonrise_min = _hhmm(moonrise_str)
 
-                sun_data   = WeatherConfigWindow._load_sun_data()
-                sunset_min = WeatherConfigWindow._sunset_local_minutes(sun_data, tz_name)
+                sun_data = WeatherConfigWindow._load_sun_data()
+                sunset_min = WeatherConfigWindow._sunset_local_minutes(
+                    sun_data, tz_name)
                 if sunset_min is not None:
                     nightfall = sunset_min + 60   # 60 min after sunset = start of night
                 else:
                     sunset_min = 19 * 60   # fallback: 19:00
-                    nightfall  = 20 * 60   # fallback: 20:00
+                    nightfall = 20 * 60   # fallback: 20:00
 
                 if moonset_min < sunset_min and moonrise_min < nightfall:
                     not_visible = True
@@ -1607,11 +1625,11 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 raise ValueError(f"Config key '{key}' is empty")
             return val
 
-        api_key      = _get("MOON_API_KEY")
-        location     = _get("LOCATION")
+        api_key = _get("MOON_API_KEY")
+        location = _get("LOCATION")
         timezone_val = _get("TIMEZONE")
 
-        now        = datetime.now()
+        now = datetime.now()
         date_param = now.strftime("%d/%m/%Y")
         time_param = now.strftime("%H:%M")
 
@@ -1634,12 +1652,14 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         if "moonrise" not in data:
             raise RuntimeError("Unexpected response: 'moonrise' field missing")
 
-        data["retrieved_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        data["retrieved_at"] = datetime.now(
+        ).astimezone().isoformat(timespec="seconds")
         return data
 
     def _on_moon_update_clicked(self, btn: Gtk.Button) -> None:
         if not self._entries:
-            self._show_error("No config file loaded. Please open a config file first.")
+            self._show_error(
+                "No config file loaded. Please open a config file first.")
             return
 
         btn.set_sensitive(False)
@@ -1668,7 +1688,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 # Section was in error state — rebuild and swap it in
                 new_group = self._build_moon_data_section()
                 if self._moon_data_group and self._moon_data_group.get_parent():
-                    self._groups_box.insert_child_after(new_group, self._moon_data_group)
+                    self._groups_box.insert_child_after(
+                        new_group, self._moon_data_group)
                     self._groups_box.remove(self._moon_data_group)
                 self._moon_data_group = new_group
             self._show_toast("Moon data updated successfully")
@@ -1725,7 +1746,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         # Also refresh the group description with the new retrieved_at timestamp
         if self._moon_data_group:
-            self._moon_data_group.set_description(self._moon_retrieved_description(data))
+            self._moon_data_group.set_description(
+                self._moon_retrieved_description(data))
 
     def _build_moon_data_section(self) -> Adw.PreferencesGroup:
         """
@@ -1741,7 +1763,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         update_btn = Gtk.Button(label="Update")
         update_btn.add_css_class("flat")
         update_btn.set_valign(Gtk.Align.CENTER)
-        update_btn.set_tooltip_text("Fetch latest moon data from the API and save to moon-data.json")
+        update_btn.set_tooltip_text(
+            "Fetch latest moon data from the API and save to moon-data.json")
         update_btn.connect("clicked", self._on_moon_update_clicked)
         group.set_header_suffix(update_btn)
 
@@ -1754,7 +1777,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._moon_value_labels: dict[str, Gtk.Label] = {}
 
         try:
-            data: dict[str, Any] = json.loads(moon_path.read_text(encoding="utf-8"))
+            data: dict[str, Any] = json.loads(
+                moon_path.read_text(encoding="utf-8"))
         except Exception as exc:
             main_row.set_title("Moon data unavailable")
             main_row.set_subtitle(str(exc))
@@ -1806,7 +1830,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             lbl.set_halign(Gtk.Align.START)
             lbl.add_css_class("dim-label")
 
-            val = Gtk.Label(label=self._format_moon_value(key, _get_moon_value(key)))
+            val = Gtk.Label(label=self._format_moon_value(
+                key, _get_moon_value(key)))
             val.set_halign(Gtk.Align.END)
             val.set_hexpand(True)
             val.set_selectable(False)
@@ -1827,7 +1852,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         # ── Optional alert row (separator + label) ────────────────────────────
         _tz_entry = self._entries.get("TIMEZONE", None)
-        _tz_name  = _tz_entry.display_value.strip() if _tz_entry else ""
+        _tz_name = _tz_entry.display_value.strip() if _tz_entry else ""
         alert_text = self._compute_moon_alert(data, _tz_name)
 
         alert_sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
@@ -1846,7 +1871,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         alert_box.set_visible(alert_text is not None)
 
         # Store references for in-place refresh
-        self._moon_alert_row   = alert_box
+        self._moon_alert_row = alert_box
         self._moon_alert_label = alert_label
 
         # Wrap grids + optional alert in a vertical container
@@ -1889,7 +1914,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 app = self.get_application()
                 ip_store = getattr(app, "ip_store", None)
                 tz_store = getattr(app, "tz_store", None)
-                row = make_row(entry, self._on_entry_changed, ip_store, tz_store)
+                row = make_row(entry, self._on_entry_changed,
+                               ip_store, tz_store)
 
                 # Add to group
                 group.add(row)
@@ -1930,7 +1956,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         dialog.open(self, None, self._on_file_chosen)
 
     def _on_file_chosen(self, dialog: Gtk.FileDialog,
-                         result: Gio.AsyncResult) -> None:
+                        result: Gio.AsyncResult) -> None:
         try:
             gfile = dialog.open_finish(result)
         except GLib.Error:
@@ -1944,7 +1970,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             self._config_path = path
             self._undo_stack.clear()
             # Snapshot original values so we can detect "back to unchanged"
-            self._original_values = {k: e.raw_value for k, e in self._entries.items()}
+            self._original_values = {
+                k: e.raw_value for k, e in self._entries.items()}
             self._update_button_states()
 
             # Build UI first
@@ -1968,7 +1995,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
     def _on_save_clicked(self, *_: Any) -> None:
         if not self._config_path:
-            self._show_error("No file is loaded. Please open a config file first.")
+            self._show_error(
+                "No file is loaded. Please open a config file first.")
             return
         # Validate all
         errors: list[str] = []
@@ -2004,7 +2032,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
             # Advance the baseline so Save deactivates, but keep undo stack
             # intact so the user can still undo changes made before saving.
-            self._original_values = {k: e.raw_value for k, e in self._entries.items()}
+            self._original_values = {
+                k: e.raw_value for k, e in self._entries.items()}
             self._update_button_states()
 
         except subprocess.CalledProcessError as exc:
@@ -2103,7 +2132,7 @@ class WeatherConfigApp(Adw.Application):
             self.settings = Gio.Settings.new(self.SETTINGS_SCHEMA)
         except Exception:
             self.settings = None
-        
+
         self.ip_store = IpMappingStore(self.settings)
         self.tz_store = TimezoneStore()   # loaded lazily on first row construction
 

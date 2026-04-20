@@ -384,7 +384,7 @@ Interval: `600`
 
 ```json
 "custom/weather": {
-  "exec": "~/.local/bin/linux-weather-bar.sh",
+  "exec": "~/.local/share/bin/linux-weather-bar/linux-weather-bar.sh",
   "interval": 600
 }
 ```
@@ -396,7 +396,7 @@ Interval: `600`
 ```ini
 [module/weather]
 type = custom/script
-exec = ~/.local/bin/linux-weather-bar.sh
+exec = ~/.local/share/bin/linux-weather-bar/linux-weather-bar.sh
 interval = 600
 ```
 
@@ -406,7 +406,7 @@ interval = 600
 
 ```ini
 [weather]
-command=~/.local/bin/linux-weather-bar.sh
+command=~/.local/share/bin/linux-weather-bar/linux-weather-bar.sh
 interval=600
 ```
 
