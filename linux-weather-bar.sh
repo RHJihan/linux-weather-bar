@@ -506,10 +506,12 @@ load_moon_cache() {
 #   - Returns the modified JSON response
 #
 # Output:
-#   JSON response from API with an added field:
+#   JSON response from API with added fields:
 #     {
 #       ... original fields ...,
-#       "retrieved_at": "2026-04-17T14:00:00+06:00"
+#       "retrieved_at": "1745207588",
+#       "moonrise": 1745207940,
+#       "moonset": 1745234100
 #     }
 #
 # Failure cases:
@@ -533,11 +535,8 @@ call_moon_api() {
     # Sanity-check: ensure expected field is present
     echo "$response" | jq -e '.moonrise' >/dev/null 2>&1 || return 1
 
-    # Add fetch timestamp and convert all values to strings
-    response=$(echo "$response" | jq --arg ts "$(date -Iseconds)" '
-        . + {retrieved_at: $ts}
-        | walk(if type == "number" or type == "boolean" then tostring else . end)
-    ')
+    # Convert all values to strings (epochs are injected afterwards as plain integers)
+    response=$(echo "$response" | jq 'walk(if type == "number" or type == "boolean" then tostring else . end)')
 
     # ── Replace HH:MM strings with epoch integers ─────────────────────────────
     # moonrise: always anchored to the response date.
@@ -580,11 +579,12 @@ call_moon_api() {
         moonset_ep=${moonset_ep:-0}
     fi
 
-    # Write epochs back into .moonrise / .moonset, replacing the HH:MM strings
+    # Write epochs back into .moonrise / .moonset / .retrieved_at as plain integers
     response=$(echo "$response" | jq \
         --argjson mrise "$moonrise_ep" \
         --argjson mset  "$moonset_ep" \
-        '.moonrise = $mrise | .moonset = $mset')
+        --argjson ts    "$(date +%s)" \
+        '.moonrise = $mrise | .moonset = $mset | .retrieved_at = $ts')
 
     echo "$response"
 }
@@ -650,9 +650,9 @@ _is_moon_cache_stale() {
     local now="$2"
     local moonset_epoch="$3"
 
-    local retrieved_at_epoch=0 cached_moonrise_epoch retrieved_at_str
-    retrieved_at_str=$(jq -r '.retrieved_at // ""' <<<"$cache" 2>/dev/null)
-    [[ -n "$retrieved_at_str" ]] && retrieved_at_epoch=$(date -d "$retrieved_at_str" +%s 2>/dev/null || echo 0)
+    local retrieved_at_epoch=0 cached_moonrise_epoch
+    retrieved_at_epoch=$(jq -r '.retrieved_at // 0' <<<"$cache" 2>/dev/null)
+    retrieved_at_epoch=${retrieved_at_epoch:-0}
     cached_moonrise_epoch=$(jq -r '.moonrise // 0' <<<"$cache" 2>/dev/null)
     cached_moonrise_epoch=${cached_moonrise_epoch:-0}
 

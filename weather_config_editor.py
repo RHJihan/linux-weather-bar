@@ -1455,12 +1455,13 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             except (ValueError, TypeError):
                 return text
         if key == "retrieved_at":
-            dt = WeatherConfigWindow._parse_moon_dt(text)
-            if dt:
+            try:
+                dt = datetime.fromtimestamp(int(float(text)))
                 date_part = f"{dt.day} {dt.strftime('%B %Y')}"
-                time_part = dt.strftime("%I:%M %p").lstrip("0")
+                time_part = dt.strftime("%I:%M %p")
                 return f"{date_part} {time_part.upper()}"
-            return text
+            except (ValueError, TypeError):
+                return text
         if key == "distance":
             try:
                 return f"{float(text):,.2f} km"
@@ -1697,8 +1698,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         if "moonrise" not in data:
             raise RuntimeError("Unexpected response: 'moonrise' field missing")
 
-        data["retrieved_at"] = datetime.now(
-        ).astimezone().isoformat(timespec="seconds")
+        data["retrieved_at"] = int(datetime.now().timestamp())
         self._inject_moon_epochs(data)
         return data
 
@@ -1754,11 +1754,13 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         description = ""
         retrieved_raw = data.get("retrieved_at", "")
         if retrieved_raw:
-            dt = self._parse_moon_dt(str(retrieved_raw).strip())
-            if dt:
+            try:
+                dt = datetime.fromtimestamp(int(float(str(retrieved_raw).strip())))
                 date_part = f"{dt.day} {dt.strftime('%B %Y')}"
-                time_part = dt.strftime("%I:%M %p").lstrip("0")
+                time_part = dt.strftime("%I:%M %p")
                 return f"{description}Retrieved: {date_part} {time_part.upper()}"
+            except (ValueError, TypeError):
+                pass
         return description
 
     def _refresh_moon_data_values(self, data: dict[str, Any]) -> None:
