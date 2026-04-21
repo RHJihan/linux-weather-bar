@@ -1551,6 +1551,20 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         alerts: list[str] = []
 
+                # ── Currently in moon window ───────────────────────────────────────────
+        # A moon window is defined as the period between moonrise and moonset.
+        # Epochs of zero (or missing) mean the data is unavailable — skip silently.
+        try:
+            moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
+            moonset_ep = int(float(moonset_str)) if moonset_str else 0
+
+            if moonrise_ep > 0 and moonset_ep > 0:
+                now_ep = int(datetime.now().timestamp())
+                if moonrise_ep <= now_ep <= moonset_ep:
+                    alerts.append("Currently in lunar window")
+        except Exception:
+            pass  # malformed epoch — skip this check
+
         # ── Supermoon ─────────────────────────────────────────────────────────
         SUPERMOON_THRESHOLD = 367_600  # km
         if is_new_or_full and distance_km is not None and distance_km <= SUPERMOON_THRESHOLD:
