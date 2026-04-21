@@ -509,6 +509,117 @@ class Validator:
         return ""
 
 
+# ─── Moon Data Live Monitor ───────────────────────────────────────────────────
+
+
+class MoonDataMonitor:
+    """
+    Watches ~/.cache/weather/moon-data.json for changes and computes live
+    values (like lunar window progress) that update every second.
+
+    Responsibilities:
+      • File watching: Detects file changes via Gio.FileMonitor
+      • Time-based updates: Recomputes time-sensitive values via GLib.timeout
+      • Callback dispatch: Notifies subscribers when data or time changes
+
+    Error handling: Silently tolerates missing files or invalid JSON.
+    """
+
+    def __init__(self) -> None:
+        self._moon_path = Path.home() / ".cache" / "weather" / "moon-data.json"
+        self._file_monitor: Optional[Gio.FileMonitor] = None
+        self._monitor_signal_id: Optional[int] = None
+        self._timeout_id: Optional[int] = None
+        self._data: dict[str, Any] = {}
+        self._callbacks: list[Callable[[dict[str, Any]], None]] = []
+
+    def _load_data(self) -> dict[str, Any]:
+        """Load moon-data.json. Returns {} if file missing or invalid JSON."""
+        try:
+            return json.loads(self._moon_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def add_callback(self, callback: Callable[[dict[str, Any]], None]) -> None:
+        """Register callback to be invoked when data or time changes."""
+        self._callbacks.append(callback)
+
+    def start_watching(self) -> None:
+        """Start file monitoring and periodic timer."""
+        if self._file_monitor is not None:
+            return  # Already started
+
+        # Load initial data
+        self._data = self._load_data()
+        self._dispatch_callbacks()
+
+        # Set up file monitor
+        gfile = Gio.File.new_for_path(str(self._moon_path.parent))
+        try:
+            self._file_monitor = gfile.monitor_directory(
+                Gio.FileMonitorFlags.NONE, None)
+            self._monitor_signal_id = self._file_monitor.connect(
+                "changed", self._on_file_changed)
+        except Exception:
+            # Monitor setup failed; timeout alone will keep updates flowing
+            self._file_monitor = None
+
+        # Set up periodic timer (every 1 second)
+        self._timeout_id = GLib.timeout_add_seconds(1, self._on_timeout)
+
+    def stop_watching(self) -> None:
+        """Stop file monitoring and timer."""
+        if self._file_monitor is not None and self._monitor_signal_id is not None:
+            self._file_monitor.disconnect(self._monitor_signal_id)
+            self._monitor_signal_id = None
+            self._file_monitor = None
+
+        if self._timeout_id is not None:
+            GLib.source_remove(self._timeout_id)
+            self._timeout_id = None
+
+        self._callbacks.clear()
+        self._data.clear()
+
+    def _on_file_changed(self, monitor: Gio.FileMonitor, file: Gio.File,
+                         other_file: Optional[Gio.File],
+                         event_type: Gio.FileMonitorEvent) -> None:
+        """Fired when a file in the monitored directory changes."""
+        # Ignore non-CHANGED events (CREATED, RENAMED, etc.)
+        if event_type not in (
+            Gio.FileMonitorEvent.CHANGED,
+            Gio.FileMonitorEvent.CHANGES_DONE_HINT,
+        ):
+            return
+
+        # Check if this is our target file
+        if file.get_path() != str(self._moon_path):
+            return
+
+        # Reload data and dispatch
+        self._data = self._load_data()
+        self._dispatch_callbacks()
+
+    def _on_timeout(self) -> bool:
+        """Called every 1 second; recompute time-sensitive values."""
+        # Even if file content hasn't changed, time-based values
+        # (like lunar window progress %) need recomputation.
+        self._dispatch_callbacks()
+        return True  # Keep firing
+
+    def _dispatch_callbacks(self) -> None:
+        """Invoke all registered callbacks with current data."""
+        for callback in self._callbacks:
+            try:
+                callback(self._data)
+            except Exception:
+                pass  # Silently ignore callback errors
+
+    def get_data(self) -> dict[str, Any]:
+        """Return currently cached data dict."""
+        return self._data.copy()
+
+
 # ─── Row Widgets ─────────────────────────────────────────────────────────────
 
 
@@ -1244,7 +1355,17 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._moon_value_labels: dict[str, Gtk.Label] = {}
         self._moon_data_group: Optional[Adw.PreferencesGroup] = None
 
+        # ── Live moon data monitoring ──────────────────────────────────────
+        self._moon_monitor = MoonDataMonitor()
+        self._moon_monitor.add_callback(self._on_moon_data_updated)
+        self._moon_alert_row: Optional[Gtk.Box] = None
+        self._moon_alert_label: Optional[Gtk.Label] = None
+
         self._build_ui()
+
+        # Start monitoring when window is realized
+        self.connect("realize", self._on_window_realized)
+        self.connect("close-request", self._on_window_closed)
 
     def _has_changes(self) -> bool:
         if not self._original_values:
@@ -1632,6 +1753,128 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         return ". ".join(alerts)
 
+    def _compute_lunar_window_progress(self, data: dict[str, Any]) -> Optional[str]:
+        """
+        Compute the current lunar window progress percentage (live, updates every second).
+
+        Returns a string like "Currently in lunar window (42%)" when the moon is
+        between moonrise and moonset, or None when outside the window.
+
+        This is extracted from _compute_moon_alert to enable frequent updates
+        without recomputing supermoons/micromoons/visibility checks.
+        """
+        moonrise_str = str(data.get("moonrise", "")).strip()
+        moonset_str = str(data.get("moonset", "")).strip()
+
+        try:
+            moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
+            moonset_ep = int(float(moonset_str)) if moonset_str else 0
+
+            if moonrise_ep > 0 and moonset_ep > 0:
+                now_ep = int(datetime.now().timestamp())
+
+                if moonrise_ep <= now_ep <= moonset_ep:
+                    window_total = moonset_ep - moonrise_ep
+                    elapsed = now_ep - moonrise_ep
+
+                    if window_total > 0:
+                        # Clamp to 0–100
+                        percent = int((elapsed / window_total) * 100)
+                        percent = max(0, min(percent, 100))
+                    else:
+                        percent = 0
+
+                    return f"Currently in lunar window ({percent}%)"
+        except Exception:
+            pass
+
+        return None
+
+    def _compute_moon_alert_static(self, data: dict[str, Any], tz_name: str = "") -> Optional[str]:
+        """
+        Like _compute_moon_alert but excludes the lunar window progress check
+        (which updates every second anyway). Useful for static alerts like
+        supermoons and visibility warnings.
+
+        Returns a one-line alert string, or None when nothing notable applies.
+        """
+        phase = str(data.get("phase", "")).strip()
+        illumination_raw = str(
+            data.get("illumination", "0")).replace("%", "").strip()
+        try:
+            illumination = float(illumination_raw)
+        except ValueError:
+            illumination = 0.0
+
+        # Extract distance from position sub-dict
+        position = data.get("position", {})
+        distance_raw = (
+            position.get("distance") if isinstance(position, dict)
+            else data.get("distance")
+        )
+        try:
+            distance_km = float(str(distance_raw))
+        except (ValueError, TypeError):
+            distance_km = None
+
+        moonrise_str = str(data.get("moonrise", "")).strip()
+        moonset_str = str(data.get("moonset", "")).strip()
+
+        is_new_or_full = phase in ("New Moon", "Full Moon")
+
+        alerts: list[str] = []
+
+        # ── Supermoon ─────────────────────────────────────────────────────────
+        SUPERMOON_THRESHOLD = 367_600  # km
+        if is_new_or_full and distance_km is not None and distance_km <= SUPERMOON_THRESHOLD:
+            if phase == "New Moon":
+                alerts.append("🌑 Super New Moon")
+            else:
+                alerts.append("🌕 Supermoon")
+
+        # ── Micromoon ─────────────────────────────────────────────────────────
+        MICROMOON_THRESHOLD = 401_000  # km
+        if is_new_or_full and distance_km is not None and distance_km >= MICROMOON_THRESHOLD:
+            alerts.append("🌑 Micromoon")
+
+        # ── Not visible at night ──────────────────────────────────────────────
+        not_visible = False
+
+        # Very thin crescent / new moon → almost never visible
+        if illumination < 5.0:
+            not_visible = True
+
+        if not not_visible:
+            try:
+                def _epoch_to_mins(s: str) -> int:
+                    dt = datetime.fromtimestamp(int(float(s)))
+                    return dt.hour * 60 + dt.minute
+
+                moonset_min = _epoch_to_mins(moonset_str)
+                moonrise_min = _epoch_to_mins(moonrise_str)
+
+                sun_data = WeatherConfigWindow._load_sun_data()
+                sunset_min = WeatherConfigWindow._sunset_local_minutes(
+                    sun_data, tz_name)
+                if sunset_min is not None:
+                    nightfall = sunset_min + 60
+                else:
+                    sunset_min = 19 * 60
+                    nightfall = 20 * 60
+
+                if moonset_min < sunset_min and moonrise_min < nightfall:
+                    not_visible = True
+            except Exception:
+                pass
+
+        if not_visible:
+            alerts.append("Not visible at night.")
+
+        if not alerts:
+            return None
+
+        return ". ".join(alerts)
+
     @staticmethod
     def _inject_moon_epochs(data: dict[str, Any]) -> None:
         """
@@ -1779,7 +2022,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         retrieved_raw = data.get("retrieved_at", "")
         if retrieved_raw:
             try:
-                dt = datetime.fromtimestamp(int(float(str(retrieved_raw).strip())))
+                dt = datetime.fromtimestamp(
+                    int(float(str(retrieved_raw).strip())))
                 date_part = f"{dt.day} {dt.strftime('%B %Y')}"
                 time_part = dt.strftime("%I:%M %p")
                 return f"{description}Retrieved: {date_part} {time_part.upper()}"
@@ -1936,6 +2180,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         alert_label.set_margin_top(8)
         alert_label.set_margin_bottom(8)
         alert_label.add_css_class("dim-label")
+        alert_label.set_wrap(True)  # Allow wrapping for long alerts
 
         alert_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         alert_box.append(alert_sep)
@@ -2017,6 +2262,70 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 row = self._rows.get(dep_key)
                 if row:
                     row.set_sensitive(is_enabled)
+
+    # ── Window Lifecycle & Moon Data Updates ──────────────────────────────────
+
+    def _on_window_realized(self, *_: Any) -> None:
+        """Start moon data monitoring when window is first shown."""
+        self._moon_monitor.start_watching()
+
+    def _on_window_closed(self, *_: Any) -> bool:
+        """Clean up monitoring when window closes."""
+        self._moon_monitor.stop_watching()
+        return False
+
+    def _on_moon_data_updated(self, data: dict[str, Any]) -> None:
+        """
+        Callback fired when moon data changes (file reload) OR every second (timeout).
+        Updates the UI in-place without rebuilding.
+        """
+        if not data or not self._moon_value_labels:
+            return
+
+        # Update data value labels (from _refresh_moon_data_values)
+        def _get(key: str) -> Any:
+            if key == "phase_value":
+                phase_details = data.get("phase_details")
+                if isinstance(phase_details, dict):
+                    return phase_details.get("phase_value")
+                return data.get("phase_value")
+            if key == "distance":
+                position = data.get("position")
+                if isinstance(position, dict):
+                    return position.get("distance")
+                return data.get("distance")
+            return data.get(key)
+
+        for key, val_label in self._moon_value_labels.items():
+            val_label.set_label(self._format_moon_value(key, _get(key)))
+
+        # Update alert row with both lunar window progress + static alerts
+        if self._moon_alert_row is not None and self._moon_alert_label is not None:
+            tz_name = self._entries.get("TIMEZONE", None)
+            tz_name = tz_name.display_value.strip() if tz_name else ""
+
+            # Combine progress (updates every second) + static alerts
+            progress = self._compute_lunar_window_progress(data)
+            static_alert = self._compute_moon_alert_static(data, tz_name)
+
+            alert_parts = []
+            if progress:
+                alert_parts.append(progress)
+            if static_alert:
+                alert_parts.append(static_alert)
+
+            alert_text = ". ".join(alert_parts)
+
+            if alert_text:
+                self._moon_alert_label.set_label(alert_text)
+                self._moon_alert_row.set_visible(True)
+            else:
+                self._moon_alert_row.set_visible(False)
+
+        # Refresh the group description with the new retrieved_at timestamp
+        if self._moon_data_group:
+            self._moon_data_group.set_description(
+                self._moon_retrieved_description(data))
 
     # ── File Operations ───────────────────────────────────────────────────────
 
@@ -2107,15 +2416,6 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             self._original_values = {
                 k: e.raw_value for k, e in self._entries.items()}
             self._update_button_states()
-
-            # Reload the Moon Data group from disk (moon-data.json), replacing
-            # the existing group in-place without touching any other groups.
-            new_moon_group = self._build_moon_data_section()
-            if self._moon_data_group and self._moon_data_group.get_parent():
-                self._groups_box.insert_child_after(
-                    new_moon_group, self._moon_data_group)
-                self._groups_box.remove(self._moon_data_group)
-            self._moon_data_group = new_moon_group
 
         except subprocess.CalledProcessError as exc:
             self._show_error(f"Extension reload failed:\n{exc}")
