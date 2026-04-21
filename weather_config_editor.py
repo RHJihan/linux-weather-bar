@@ -42,7 +42,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, Gtk, Pango  # noqa: E402
 
 
 # ─── Data Model ──────────────────────────────────────────────────────────────
@@ -67,7 +67,8 @@ class VarSchema:
     description: str = ""
     default: Any = None
     choices: list[str] = field(default_factory=list)          # for ENUM
-    sentinel_label: str = ""                                   # for NUMERIC_OR_SENTINEL
+    # for NUMERIC_OR_SENTINEL
+    sentinel_label: str = ""
     sentinel_value: str = ""                                   # e.g. "moonrise"
     group: str = "General"
     readonly: bool = False                                     # bash `readonly`
@@ -466,6 +467,12 @@ class SearchableDropDown:
     Both ``TimezoneRow`` and ``LocationRow`` use this class so all searchable-
     dropdown machinery is defined exactly once (DRY).
 
+    Features:
+    - Fixed, consistent width (does not resize based on selected item)
+    - Text truncation with ellipsis for items longer than fixed width
+    - Compact dropdown button that remains consistent
+    - Stable layout with no horizontal shifting
+
     Parameters
     ----------
     items:
@@ -476,18 +483,35 @@ class SearchableDropDown:
         Optional predicate; receives the current search text and returns True
         when it is acceptable.  Drives the "error" CSS class on the search
         entry for live visual feedback.  Defaults to always-valid.
+    fixed_width:
+        Optional fixed width in pixels. If None, calculates from average item length.
     """
+
+    # CSS for fixed-width dropdown with proper ellipsization
+    _CSS_PROVIDER_TEMPLATE = """
+#dropdown-{{id}} {{
+    min-width: {{width}}px;
+}}
+"""
+
+    _instance_counter = 0
 
     def __init__(
         self,
         items: list[str],
         on_selected: Callable[[str], None],
         validate: Optional[Callable[[str], bool]] = None,
+        fixed_width: Optional[int] = None,
     ) -> None:
         self._items = items
         self._on_selected_cb = on_selected
         self._validate = validate if validate is not None else (lambda _: True)
         self._search_entry: Optional[Gtk.SearchEntry] = None
+        self._fixed_width = fixed_width or self._calculate_optimal_width(items)
+
+        # Generate unique ID for CSS targeting
+        SearchableDropDown._instance_counter += 1
+        self._dropdown_id = f"sd-{SearchableDropDown._instance_counter}"
 
         # ── Model ─────────────────────────────────────────────────────────────
         self._string_list = Gtk.StringList.new(items)
@@ -498,7 +522,8 @@ class SearchableDropDown:
         self._filter.set_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
         self._filter.set_ignore_case(True)
 
-        filtered_model = Gtk.FilterListModel.new(self._string_list, self._filter)
+        filtered_model = Gtk.FilterListModel.new(
+            self._string_list, self._filter)
         selection = Gtk.SingleSelection.new(filtered_model)
         selection.set_autoselect(False)
 
@@ -511,13 +536,20 @@ class SearchableDropDown:
         self._widget = Gtk.DropDown.new(selection, None)
         self._widget.set_factory(factory)
         self._widget.set_enable_search(True)
-        self._widget.set_hexpand(True)
+        # Don't expand; use fixed width instead
+        self._widget.set_hexpand(False)
         self._widget.set_valign(Gtk.Align.CENTER)
+        self._widget.set_name(self._dropdown_id)
 
-        self._widget.connect("notify::selected-item", self._on_dropdown_selected)
+        # Apply fixed width constraints via size request and CSS
+        self._widget.set_size_request(self._fixed_width, -1)
+        self._apply_width_constraints()
+
+        self._widget.connect("notify::selected-item",
+                             self._on_dropdown_selected)
         self._widget.connect("realize", self._on_realize)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────
 
     @property
     def widget(self) -> Gtk.DropDown:
@@ -557,11 +589,62 @@ class SearchableDropDown:
         else:
             self._search_entry.remove_css_class("error")
 
+    # ── Width management ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _calculate_optimal_width(items: list[str]) -> int:
+        """
+        Calculate fixed width based on average item text length.
+
+        Uses Pango metrics to estimate width from character count:
+        - Assumes monospace or proportional font rendering
+        - Adds padding for button chrome + search icon
+
+        Returns width in pixels (minimum 200px for usability).
+        """
+        if not items:
+            return 200
+
+        # Calculate average text length
+        avg_length = sum(len(item) for item in items) / len(items)
+
+        # Rough estimate: ~7-8 pixels per character in GTK4 default font
+        # Adjust multiplier based on your font preferences
+        char_width = 7.5
+        text_width = int(avg_length * char_width)
+
+        # Add padding for dropdown button chrome and icon space
+        padding = 40
+        width = text_width + padding
+
+        # Enforce minimum and maximum for usability
+        return max(200, min(width, 400))
+
+    def _apply_width_constraints(self) -> None:
+        """
+        Apply CSS height/width constraints to the dropdown widget.
+        Uses min-width to maintain consistent, fixed button size.
+        """
+        css_text = self._CSS_PROVIDER_TEMPLATE.format(
+            id=self._dropdown_id,
+            width=self._fixed_width
+        )
+
+        css_provider = Gtk.CssProvider()
+        css_provider.load_from_data(css_text.encode("utf-8"))
+
+        context = self._widget.get_style_context()
+        context.add_provider(
+            css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
     # ── GTK4 factory callbacks ────────────────────────────────────────────────
 
     def _on_factory_setup(self, _factory: Gtk.SignalListItemFactory,
                           list_item: Gtk.ListItem) -> None:
-        list_item.set_child(Gtk.Label(xalign=0))
+        label = Gtk.Label(xalign=0)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        label.set_max_width_chars(40)
+        list_item.set_child(label)
 
     def _on_factory_bind(self, _factory: Gtk.SignalListItemFactory,
                          list_item: Gtk.ListItem) -> None:
@@ -998,8 +1081,29 @@ class EnumRow(BaseRow):
         idx = choices.index(cur) if cur in choices else 0
         self._dropdown.set_selected(idx)
         self._dropdown.set_valign(Gtk.Align.CENTER)
+
+        # Apply fixed width for consistency with searchable dropdowns
+        self._apply_enum_width(choices)
+
         self._dropdown.connect("notify::selected", self._on_selected)
         self.add_suffix(self._dropdown)
+
+    def _apply_enum_width(self, choices: list[str]) -> None:
+        """
+        Apply fixed width constraints to enum dropdown.
+        Calculates width from average choice text length.
+        """
+        # Calculate average width similarly to SearchableDropDown
+        avg_length = sum(len(c) for c in choices) / \
+            len(choices) if choices else 0
+        char_width = 7.5
+        text_width = int(avg_length * char_width)
+        padding = 40
+        fixed_width = max(200, min(text_width + padding, 400))
+
+        # Set minimum width
+        self._dropdown.set_size_request(fixed_width, -1)
+        self._dropdown.set_hexpand(False)
 
     def _on_selected(self, widget: Gtk.DropDown, _param: Any) -> None:
         idx = widget.get_selected()
@@ -2363,11 +2467,13 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             moon_phase_tuple = self._group_widgets.get("Moon Phase")
             sibling = moon_phase_tuple[0] if moon_phase_tuple else None
             self._groups_box.remove(self._moon_data_group)
-            self._moon_data_group = self._build_moon_data_section(preloaded_data=data)
+            self._moon_data_group = self._build_moon_data_section(
+                preloaded_data=data)
             # Re-insert at the correct position (immediately after Moon Phase group),
             # not at the end -- append() would push it below Network / API Keys / etc.
             if sibling is not None:
-                self._groups_box.insert_child_after(self._moon_data_group, sibling)
+                self._groups_box.insert_child_after(
+                    self._moon_data_group, sibling)
             else:
                 self._groups_box.append(self._moon_data_group)
             return
