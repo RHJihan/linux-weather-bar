@@ -440,6 +440,173 @@ class TimezoneStore:
         return bool(self.load())
 
 
+# ─── Searchable DropDown ─────────────────────────────────────
+
+
+def _find_search_entry(widget: Gtk.Widget) -> Optional[Gtk.SearchEntry]:
+    """Recursively find the first GtkSearchEntry inside *widget*."""
+    if isinstance(widget, Gtk.SearchEntry):
+        return widget
+    child = widget.get_first_child()
+    while child is not None:
+        found = _find_search_entry(child)
+        if found:
+            return found
+        child = child.get_next_sibling()
+    return None
+
+
+class SearchableDropDown:
+    """
+    GTK4-native DropDown with built-in substring search/filtering.
+
+    Wraps Gtk.DropDown + Gtk.StringFilter + Gtk.FilterListModel with a
+    SignalListItemFactory that renders each item as a plain left-aligned label.
+
+    Both ``TimezoneRow`` and ``LocationRow`` use this class so all searchable-
+    dropdown machinery is defined exactly once (DRY).
+
+    Parameters
+    ----------
+    items:
+        Flat list of strings to display.
+    on_selected:
+        Called with the chosen string whenever the user picks an item.
+    validate:
+        Optional predicate; receives the current search text and returns True
+        when it is acceptable.  Drives the "error" CSS class on the search
+        entry for live visual feedback.  Defaults to always-valid.
+    """
+
+    def __init__(
+        self,
+        items: list[str],
+        on_selected: Callable[[str], None],
+        validate: Optional[Callable[[str], bool]] = None,
+    ) -> None:
+        self._items = items
+        self._on_selected_cb = on_selected
+        self._validate = validate if validate is not None else (lambda _: True)
+        self._search_entry: Optional[Gtk.SearchEntry] = None
+
+        # ── Model ─────────────────────────────────────────────────────────────
+        self._string_list = Gtk.StringList.new(items)
+
+        self._filter = Gtk.StringFilter.new(
+            Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
+        )
+        self._filter.set_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
+        self._filter.set_ignore_case(True)
+
+        filtered_model = Gtk.FilterListModel.new(self._string_list, self._filter)
+        selection = Gtk.SingleSelection.new(filtered_model)
+        selection.set_autoselect(False)
+
+        # ── Factory ───────────────────────────────────────────────────────────
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self._on_factory_setup)
+        factory.connect("bind", self._on_factory_bind)
+
+        # ── Widget ────────────────────────────────────────────────────────────
+        self._widget = Gtk.DropDown.new(selection, None)
+        self._widget.set_factory(factory)
+        self._widget.set_enable_search(True)
+        self._widget.set_hexpand(True)
+        self._widget.set_valign(Gtk.Align.CENTER)
+
+        self._widget.connect("notify::selected-item", self._on_dropdown_selected)
+        self._widget.connect("realize", self._on_realize)
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    @property
+    def widget(self) -> Gtk.DropDown:
+        """The underlying Gtk.DropDown; append this to your container."""
+        return self._widget
+
+    @property
+    def search_entry(self) -> Optional[Gtk.SearchEntry]:
+        """The DropDown's internal search entry (available after realise)."""
+        return self._search_entry
+
+    def select(self, value: str) -> None:
+        """
+        Programmatically select the item whose string equals *value* (exact).
+        Clears any active filter first so StringList indices align correctly.
+        """
+        if not value:
+            return
+        self._filter.set_search("")
+        if self._search_entry is not None:
+            self._search_entry.handler_block_by_func(self._on_search_changed)
+            self._search_entry.set_text("")
+            self._search_entry.handler_unblock_by_func(self._on_search_changed)
+        n = self._string_list.get_n_items()
+        for i in range(n):
+            item = self._string_list.get_item(i)
+            if item and item.get_string() == value:
+                self._widget.set_selected(i)
+                return
+
+    def set_error(self, has_error: bool) -> None:
+        """Apply or remove the 'error' CSS class on the search entry."""
+        if self._search_entry is None:
+            return
+        if has_error:
+            self._search_entry.add_css_class("error")
+        else:
+            self._search_entry.remove_css_class("error")
+
+    # ── GTK4 factory callbacks ────────────────────────────────────────────────
+
+    def _on_factory_setup(self, _factory: Gtk.SignalListItemFactory,
+                          list_item: Gtk.ListItem) -> None:
+        list_item.set_child(Gtk.Label(xalign=0))
+
+    def _on_factory_bind(self, _factory: Gtk.SignalListItemFactory,
+                         list_item: Gtk.ListItem) -> None:
+        obj = list_item.get_item()
+        label: Gtk.Label = list_item.get_child()
+        if obj is not None:
+            label.set_label(obj.get_string())
+
+    # ── Internal signal handlers ──────────────────────────────────────────────
+
+    def _on_realize(self, widget: Gtk.DropDown) -> None:
+        """Wire up the DropDown's internal search entry after realisation."""
+        se = _find_search_entry(widget)
+        if se is not None:
+            self._search_entry = se
+            se.connect("search-changed", self._on_search_changed)
+
+    def _on_search_changed(self, search_entry: Gtk.SearchEntry) -> None:
+        """
+        Drives the StringFilter and live error styling as the user types.
+        Never writes to any ConfigEntry — that is _on_dropdown_selected's job.
+        Partial search text (e.g. "asia/dha") must never become a saved value.
+        """
+        text = search_entry.get_text().strip()
+        self._filter.set_search(text)
+        is_valid = self._validate(text)
+        if is_valid:
+            search_entry.remove_css_class("error")
+        else:
+            search_entry.add_css_class("error")
+
+    def _on_dropdown_selected(self, dropdown: Gtk.DropDown,
+                              _param: object) -> None:
+        """Fires when the user picks an item; clears error and invokes callback."""
+        obj = dropdown.get_selected_item()
+        if obj is None:
+            return
+        text: str = obj.get_string()
+        if not text:
+            return
+        if self._search_entry is not None:
+            self._search_entry.remove_css_class("error")
+        self._on_selected_cb(text)
+
+
 # ─── Config File I/O ─────────────────────────────────────────────────────────
 
 
@@ -851,9 +1018,13 @@ class EnumRow(BaseRow):
 class LocationRow(BaseRow):
     """
     LOCATION row with:
-    - Preset dropdown loaded from location_mappings.csv
-    - CUSTOM checkbox to reveal manual lat/lon entries (existing UI)
-    - pin button to open Google Maps
+    - Searchable preset dropdown (via SearchableDropDown) loaded from
+      location_mappings.csv — mirrors TimezoneRow's search UX exactly.
+    - Custom checkbox to reveal manual lat/lon entries.
+    - Pin button to open Google Maps.
+
+    When no CSV is available the checkbox and dropdown are hidden and Custom
+    mode is forced so the manual entries are always shown.
     """
 
     def __init__(self, entry: ConfigEntry,
@@ -863,16 +1034,20 @@ class LocationRow(BaseRow):
 
         self._ip_store = ip_store
         self._locations: list[LocationEntry] = []
+        self._sdd: Optional[SearchableDropDown] = None
 
         lat, lon = self._parse_location(entry.display_value)
 
-        # ── Single horizontal row ─────────────────────────────────────────────────
+        # ── Layout ────────────────────────────────────────────────────────────
         row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         row_box.set_valign(Gtk.Align.CENTER)
 
-        self._dropdown = Gtk.DropDown()
-        self._dropdown.set_hexpand(True)
-        self._dropdown.connect("notify::selected", self._on_dropdown_selected)
+        # Slot that holds the SearchableDropDown widget once the CSV is loaded.
+        # Using a wrapper Box avoids rebuilding the whole layout when the CSV
+        # is absent (the slot simply stays empty and invisible).
+        self._dropdown_slot = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self._dropdown_slot.set_hexpand(True)
 
         # Manual lat/lon (inline, hidden by default)
         self._manual_box = Gtk.Box(
@@ -913,7 +1088,7 @@ class LocationRow(BaseRow):
         self._pin_btn.set_valign(Gtk.Align.CENTER)
         self._pin_btn.connect("clicked", self._on_pin_clicked)
 
-        row_box.append(self._dropdown)
+        row_box.append(self._dropdown_slot)
         row_box.append(self._manual_box)
         row_box.append(self._custom_check)
         row_box.append(self._pin_btn)
@@ -937,9 +1112,13 @@ class LocationRow(BaseRow):
         else:
             self._locations = []
 
-        labels = [loc.display_label for loc in self._locations]
-        model = Gtk.StringList.new(labels)
-        self._dropdown.set_model(model)
+        if self._locations:
+            labels = [loc.display_label for loc in self._locations]
+            self._sdd = SearchableDropDown(
+                items=labels,
+                on_selected=self._on_location_selected,
+            )
+            self._dropdown_slot.append(self._sdd.widget)
 
     # ── State sync ────────────────────────────────────────────────────────────
 
@@ -948,50 +1127,58 @@ class LocationRow(BaseRow):
         matched_idx = next(
             (i for i, loc in enumerate(self._locations)
              if loc.lat == lat and loc.lon == lon),
-            None
+            None,
         )
-        if matched_idx is not None and self._locations:
-            self._dropdown.set_selected(matched_idx)
+        if matched_idx is not None and self._sdd is not None:
+            self._sdd.select(self._locations[matched_idx].display_label)
             self._set_custom_mode(False)
         else:
             self._set_custom_mode(True)
 
     def _set_custom_mode(self, custom: bool) -> None:
-        """Toggle between preset dropdown and manual entry."""
-        # Block the check signal to avoid recursion
+        """Toggle between searchable preset dropdown and manual entry."""
         self._custom_check.handler_block_by_func(self._on_custom_toggled)
         self._custom_check.set_active(custom)
         self._custom_check.handler_unblock_by_func(self._on_custom_toggled)
 
-        self._dropdown.set_visible(not custom)
+        has_presets = self._sdd is not None
+        # Hide the whole dropdown slot when no CSV was loaded
+        self._dropdown_slot.set_visible(has_presets and not custom)
         self._manual_box.set_visible(custom)
+        # No point showing the checkbox if there are no presets to go back to
+        self._custom_check.set_visible(has_presets)
 
     # ── Signals ───────────────────────────────────────────────────────────────
 
     def _on_custom_toggled(self, widget: Gtk.CheckButton) -> None:
         self._set_custom_mode(widget.get_active())
         if not widget.get_active():
-            # Switching back to preset: apply currently selected dropdown item
-            self._on_dropdown_selected(self._dropdown, None)
+            # Switching back to preset: re-apply the currently selected item
+            if self._sdd is not None:
+                obj = self._sdd.widget.get_selected_item()
+                if obj is not None:
+                    self._on_location_selected(obj.get_string())
         else:
-            # Switching to custom: apply manual entries
+            # Switching to custom: commit whatever is in the manual entries
             self._on_manual_changed()
 
-    def _on_dropdown_selected(self, widget: Gtk.DropDown, _param: Any) -> None:
+    def _on_location_selected(self, label: str) -> None:
+        """Called by SearchableDropDown when the user picks a preset location."""
         if self._custom_check.get_active():
             return
-        idx = widget.get_selected()
-        if 0 <= idx < len(self._locations):
-            loc = self._locations[idx]
-            self.entry.display_value = loc.location_value
-            # Keep manual entries in sync (useful if user later switches to Custom)
-            self._lat_entry.handler_block_by_func(self._on_manual_changed)
-            self._lon_entry.handler_block_by_func(self._on_manual_changed)
-            self._lat_entry.set_text(loc.lat)
-            self._lon_entry.set_text(loc.lon)
-            self._lat_entry.handler_unblock_by_func(self._on_manual_changed)
-            self._lon_entry.handler_unblock_by_func(self._on_manual_changed)
-            self._notify_change()
+        loc = next(
+            (l for l in self._locations if l.display_label == label), None)
+        if loc is None:
+            return
+        self.entry.display_value = loc.location_value
+        # Keep manual entries in sync so switching to Custom is seamless
+        self._lat_entry.handler_block_by_func(self._on_manual_changed)
+        self._lon_entry.handler_block_by_func(self._on_manual_changed)
+        self._lat_entry.set_text(loc.lat)
+        self._lon_entry.set_text(loc.lon)
+        self._lat_entry.handler_unblock_by_func(self._on_manual_changed)
+        self._lon_entry.handler_unblock_by_func(self._on_manual_changed)
+        self._notify_change()
 
     def _on_manual_changed(self, *_: Any) -> None:
         lat = self._lat_entry.get_text().strip()
@@ -1006,7 +1193,7 @@ class LocationRow(BaseRow):
             url = f"https://www.google.com/maps?q={lat},{lon}"
             Gio.AppInfo.launch_default_for_uri(url, None)
 
-    # ── Reuse existing helpers ────────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _parse_location(self, value: str) -> tuple[str, str]:
         lat, lon = "", ""
@@ -1033,15 +1220,13 @@ class LocationRow(BaseRow):
 
 class TimezoneRow(BaseRow):
     """
-    TIMEZONE row — searchable DropDown (GTK4-native) when zone.tab is present,
-    plain text entry (original StringRow behaviour) when it is not.
+    TIMEZONE row — searchable DropDown (via SearchableDropDown) when zone.tab
+    is present, plain text entry (original StringRow behaviour) when it is not.
 
     DropDown mode:
-    - Uses Gtk.DropDown + Gtk.StringFilter; no deprecated APIs.
     - Typing in the built-in search box filters the list via SUBSTRING match.
     - Selecting from the list sets the value immediately.
-    - An 'error' CSS class is applied to the search entry when the typed text
-      is not a valid timezone, giving the user live visual feedback.
+    - 'error' CSS class is applied while the typed text is not a valid timezone.
     - On save, Validator.validate() performs a hard check against the list.
 
     Fallback mode (no zone.tab):
@@ -1058,165 +1243,34 @@ class TimezoneRow(BaseRow):
 
         if not self._all_timezones:
             # ── Fallback: plain text entry (no zone list available) ───────────
-            self._entry: Gtk.Entry = Gtk.Entry()
+            self._entry: Optional[Gtk.Entry] = Gtk.Entry()
             self._entry.set_text(entry.display_value)
             self._entry.set_placeholder_text("e.g. Asia/Dhaka")
             self._entry.set_valign(Gtk.Align.CENTER)
             self._entry.set_hexpand(True)
             self._entry.connect("changed", self._on_entry_changed)
-            self._dropdown: Optional[Gtk.DropDown] = None
-            self._search_entry: Optional[Gtk.SearchEntry] = None
-            self._filter: Optional[Gtk.StringFilter] = None
-            self._string_list: Optional[Gtk.StringList] = None
+            self._sdd: Optional[SearchableDropDown] = None
             self.add_suffix(self._entry)
             self.set_activatable_widget(self._entry)
             return
 
-        # ── GTK4-native DropDown with built-in search ─────────────────────────
-        # StringList is the GTK4 model for a flat list of strings
-        self._string_list = Gtk.StringList.new(self._all_timezones)
-
-        # StringFilter filters the model as the user types
-        self._filter = Gtk.StringFilter.new(
-            Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
+        # ── GTK4-native searchable DropDown ───────────────────────────────────
+        self._entry = None
+        self._sdd = SearchableDropDown(
+            items=self._all_timezones,
+            on_selected=self._on_tz_selected,
+            validate=lambda text: not text or text in self._all_timezones,
         )
-        self._filter.set_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
-        self._filter.set_ignore_case(True)
+        self.add_suffix(self._sdd.widget)
+        self.set_activatable_widget(self._sdd.widget)
+        self._sdd.select(entry.display_value)
 
-        filtered_model = Gtk.FilterListModel.new(
-            self._string_list, self._filter)
+    # ── Signal handlers ───────────────────────────────────────────────────────
 
-        # SingleSelection wraps the filtered model for DropDown
-        selection = Gtk.SingleSelection.new(filtered_model)
-        selection.set_autoselect(False)
-
-        # Factory to render each row as a simple label
-        factory = Gtk.SignalListItemFactory()
-        factory.connect("setup", self._on_factory_setup)
-        factory.connect("bind", self._on_factory_bind)
-
-        self._dropdown = Gtk.DropDown.new(selection, None)
-        self._dropdown.set_factory(factory)
-        self._dropdown.set_enable_search(True)
-        self._dropdown.set_hexpand(True)
-        self._dropdown.set_valign(Gtk.Align.CENTER)
-
-        # Wait for the DropDown's internal search entry to appear, then wire it up
-        self._dropdown.connect("notify::selected-item",
-                               self._on_dropdown_selected)
-
-        # We also need a plain entry so the user can type freely and see
-        # validation feedback; the DropDown's search field handles filtering.
-        # Connect to the search entry inside the DropDown after it's realised.
-        self._dropdown.connect("realize", self._on_dropdown_realize)
-
-        # Seed the dropdown selection to the current saved value
-        self._entry = None          # not used in dropdown mode
-        self._search_entry = None   # resolved in _on_dropdown_realize
-
-        self.add_suffix(self._dropdown)
-        self.set_activatable_widget(self._dropdown)
-
-        # Set initial selection
-        self._select_timezone(entry.display_value)
-
-    # ── DropDown factory callbacks ─────────────────────────────────────────────
-
-    def _on_factory_setup(self, factory: Gtk.SignalListItemFactory,
-                          list_item: Gtk.ListItem) -> None:
-        list_item.set_child(Gtk.Label(xalign=0))
-
-    def _on_factory_bind(self, factory: Gtk.SignalListItemFactory,
-                         list_item: Gtk.ListItem) -> None:
-        obj = list_item.get_item()
-        label: Gtk.Label = list_item.get_child()
-        if obj is not None:
-            label.set_label(obj.get_string())
-
-    # ── DropDown signal handlers ───────────────────────────────────────────────
-
-    def _on_dropdown_realize(self, widget: Gtk.DropDown) -> None:
-        """
-        Once the DropDown is realised its internal search entry exists.
-        Walk the widget tree to find it and connect a 'changed' handler
-        so we can apply live error styling while the user types.
-        """
-        search_entry = self._find_search_entry(widget)
-        if search_entry:
-            self._search_entry = search_entry
-            search_entry.connect("search-changed", self._on_search_changed)
-
-    def _find_search_entry(self, widget: Gtk.Widget) -> Optional[Gtk.SearchEntry]:
-        """Recursively find the first GtkSearchEntry inside widget."""
-        if isinstance(widget, Gtk.SearchEntry):
-            return widget
-        child = widget.get_first_child()
-        while child is not None:
-            found = self._find_search_entry(child)
-            if found:
-                return found
-            child = child.get_next_sibling()
-        return None
-
-    def _on_search_changed(self, search_entry: Gtk.SearchEntry) -> None:
-        """
-        Fires on every keystroke inside the DropDown's search box.
-        ONLY drives the StringFilter and live error styling.
-        Never writes to entry.display_value — that is _on_dropdown_selected's job.
-        """
-        text = search_entry.get_text().strip()
-        # Drive the filter so the popup list narrows in real time
-        self._filter.set_search(text)
-        # Show error styling while the user is mid-search; clear when empty or exact match
-        is_valid = not text or text in self._all_timezones
-        if not is_valid:
-            search_entry.add_css_class("error")
-        else:
-            search_entry.remove_css_class("error")
-        # Do NOT write to entry.display_value here.
-        # Partial search text (e.g. "asia/dha") must never become the saved value.
-
-    def _on_dropdown_selected(self, dropdown: Gtk.DropDown,
-                              _param: object) -> None:
-        """
-        Fires when the user picks an item from the dropdown list (or on initial
-        programmatic selection). get_selected_item() always returns the correct
-        StringObject from the filtered model — we just read its string directly.
-        """
-        obj = dropdown.get_selected_item()
-        if obj is None:
-            return
-        text: str = obj.get_string()
-        if not text:
-            return
-        if self._search_entry:
-            self._search_entry.remove_css_class("error")
+    def _on_tz_selected(self, text: str) -> None:
+        """Called by SearchableDropDown when the user picks a timezone."""
         self.entry.display_value = text
         self._notify_change()
-
-    def _select_timezone(self, tz: str) -> None:
-        """Set the DropDown's selected item to match *tz* (exact match).
-        Must clear the filter first so indices in the unfiltered StringList
-        align with what the DropDown's model sees.
-        """
-        if not tz or self._string_list is None or self._dropdown is None:
-            return
-        # Clear any active search filter so the full list is visible and
-        # indices in _string_list match the DropDown's model positions.
-        if self._filter is not None:
-            self._filter.set_search("")
-        if self._search_entry is not None:
-            self._search_entry.handler_block_by_func(self._on_search_changed)
-            self._search_entry.set_text("")
-            self._search_entry.handler_unblock_by_func(self._on_search_changed)
-        n = self._string_list.get_n_items()
-        for i in range(n):
-            item = self._string_list.get_item(i)
-            if item and item.get_string() == tz:
-                self._dropdown.set_selected(i)
-                return
-
-    # ── Fallback (no tz list) signal handler ──────────────────────────────────
 
     def _on_entry_changed(self, widget: Gtk.Entry) -> None:
         """Plain entry handler used only when zone.tab is unavailable."""
@@ -1227,14 +1281,9 @@ class TimezoneRow(BaseRow):
 
     def reset(self) -> None:
         val = self.entry.display_value
-        if self._dropdown is not None:
-            self._select_timezone(val)
-            if self._search_entry:
-                is_valid = not val or val in self._all_timezones
-                if not is_valid:
-                    self._search_entry.add_css_class("error")
-                else:
-                    self._search_entry.remove_css_class("error")
+        if self._sdd is not None:
+            self._sdd.select(val)
+            self._sdd.set_error(bool(val) and val not in self._all_timezones)
         elif self._entry is not None:
             self._entry.set_text(val)
 
