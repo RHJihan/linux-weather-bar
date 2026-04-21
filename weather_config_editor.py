@@ -2055,11 +2055,17 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             self._moon_data_group.set_description(
                 self._moon_retrieved_description(data))
 
-    def _build_moon_data_section(self) -> Adw.PreferencesGroup:
+    def _build_moon_data_section(self, preloaded_data: Optional[dict[str, Any]] = None) -> Adw.PreferencesGroup:
         """
         Load ~/.cache/weather/moon-data.json and display all fields
         in a compact two-column layout.
         Times are 12h with uppercase AM/PM, while dates retain proper casing.
+
+        If *preloaded_data* is supplied (e.g. already validated by the file
+        monitor) it is used directly and the file is not re-read.  This avoids
+        a race condition where the CHANGED event fires before the write is
+        complete, causing an independent read here to fail even though the
+        monitor already holds valid data.
         """
         group = Adw.PreferencesGroup()
         group.set_title("Moon Data")
@@ -2082,14 +2088,16 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # Keep a reference so we can refresh values without rebuilding
         self._moon_value_labels: dict[str, Gtk.Label] = {}
 
-        try:
-            data: dict[str, Any] = json.loads(
-                moon_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            main_row.set_title("Moon data unavailable")
-            main_row.set_subtitle(str(exc))
-            group.add(main_row)
-            return group
+        if preloaded_data is not None:
+            data: dict[str, Any] = preloaded_data
+        else:
+            try:
+                data = json.loads(moon_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                main_row.set_title("Moon data unavailable")
+                main_row.set_subtitle(str(exc))
+                group.add(main_row)
+                return group
 
         group.set_description(self._moon_retrieved_description(data))
 
@@ -2269,6 +2277,25 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         Callback fired when moon data changes (file reload) OR every second (timeout).
         Updates the UI in-place without rebuilding.
         """
+        # If data just became available while we were still showing the
+        # "Moon data unavailable" placeholder (i.e. _moon_value_labels is empty
+        # because _build_moon_data_section returned early), tear down the
+        # placeholder group and rebuild it so the data grid is created.
+        if data and not self._moon_value_labels and self._moon_data_group is not None:
+            # Pass the already-validated data dict so _build_moon_data_section
+            # does not re-read the file (avoids a race with mid-write CHANGED events).
+            moon_phase_tuple = self._group_widgets.get("Moon Phase")
+            sibling = moon_phase_tuple[0] if moon_phase_tuple else None
+            self._groups_box.remove(self._moon_data_group)
+            self._moon_data_group = self._build_moon_data_section(preloaded_data=data)
+            # Re-insert at the correct position (immediately after Moon Phase group),
+            # not at the end -- append() would push it below Network / API Keys / etc.
+            if sibling is not None:
+                self._groups_box.insert_child_after(self._moon_data_group, sibling)
+            else:
+                self._groups_box.append(self._moon_data_group)
+            return
+
         if not data or not self._moon_value_labels:
             return
 
