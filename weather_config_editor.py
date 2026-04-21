@@ -1551,7 +1551,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         alerts: list[str] = []
 
-                # ── Currently in moon window ───────────────────────────────────────────
+        # ── Currently in moon window ───────────────────────────────────────────
         # A moon window is defined as the period between moonrise and moonset.
         # Epochs of zero (or missing) mean the data is unavailable — skip silently.
         try:
@@ -1560,8 +1560,18 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
             if moonrise_ep > 0 and moonset_ep > 0:
                 now_ep = int(datetime.now().timestamp())
+
                 if moonrise_ep <= now_ep <= moonset_ep:
-                    alerts.append("Currently in lunar window")
+                    window_total = moonset_ep - moonrise_ep
+                    elapsed = now_ep - moonrise_ep
+
+                    if window_total > 0:
+                        percent = int((elapsed / window_total) * 100)
+                        percent = max(0, min(percent, 100))
+                    else:
+                        percent = 0
+
+                    alerts.append(f"Currently in lunar window ({percent}%)")
         except Exception:
             pass  # malformed epoch — skip this check
 
