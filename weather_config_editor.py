@@ -1994,17 +1994,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         def _on_success(data: dict[str, Any]) -> bool:
             btn.set_label("Update")
             btn.set_sensitive(True)
-            if self._moon_value_labels:
-                # Section was built successfully before — just update labels in-place
-                self._refresh_moon_data_values(data)
-            else:
-                # Section was in error state — rebuild and swap it in
-                new_group = self._build_moon_data_section()
-                if self._moon_data_group and self._moon_data_group.get_parent():
-                    self._groups_box.insert_child_after(
-                        new_group, self._moon_data_group)
-                    self._groups_box.remove(self._moon_data_group)
-                self._moon_data_group = new_group
+            # Live monitor detects file write and updates UI automatically
             self._show_toast("Moon data updated successfully")
             return False
 
