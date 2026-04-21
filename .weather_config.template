@@ -26,7 +26,7 @@ readonly MAX_CONNECTIVITY_RETRIES=5
 readonly CONNECTIVITY_RETRY_DELAY=5
 
 # ─── Configuration ────────────────────────────────────────────────────────────
-# Show 'feels like' when it differs by this many °C
+# Show 'feels like' when it differs by this many °C,Set to "disable" to always hide the feels-like output.
 readonly FEELS_LIKE_THRESHOLD=5
 # Show rain warnings in the forecast
 readonly SHOW_RAIN_FORECAST=true

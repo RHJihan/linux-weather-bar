@@ -1310,12 +1310,15 @@ build_weather_line() {
 	local line="               ${icon}   ${desc}   ${temp}°C"
 
 	# Append feels-like if the difference exceeds FEELS_LIKE_THRESHOLD
-	local diff
-	diff=$(awk -v t="$temp" -v f="$feels_like" 'BEGIN { d = t - f; print (d < 0 ? -d : d) }')
-	if awk -v diff="$diff" -v threshold="$FEELS_LIKE_THRESHOLD" 'BEGIN { exit !(diff > threshold) }'; then
-		local formatted_feels_like
-		formatted_feels_like=$(format_temperature "$feels_like")
-		line="               ${icon}   ${desc}   ${temp}°C  (Feels ${formatted_feels_like}°C)"
+	# Can be disabled by setting FEELS_LIKE_THRESHOLD=disable
+	if [[ "$FEELS_LIKE_THRESHOLD" != "disable" ]]; then
+		local diff
+		diff=$(awk -v t="$temp" -v f="$feels_like" 'BEGIN { d = t - f; print (d < 0 ? -d : d) }')
+		if awk -v diff="$diff" -v threshold="$FEELS_LIKE_THRESHOLD" 'BEGIN { exit !(diff > threshold) }'; then
+			local formatted_feels_like
+			formatted_feels_like=$(format_temperature "$feels_like")
+			line="               ${icon}   ${desc}   ${temp}°C  (Feels ${formatted_feels_like}°C)"
+		fi
 	fi
 
 	if [[ "$SHOW_SUNRISE_SUNSET" == "true" ]]; then

@@ -55,7 +55,7 @@ class VarType(Enum):
     FLOAT = auto()
     BOOLEAN = auto()
     ENUM = auto()
-    MOON_WINDOW = auto()   # Special: numeric OR sentinel string
+    NUMERIC_OR_SENTINEL = auto()   # Special: numeric OR sentinel string
 
 
 @dataclass
@@ -67,7 +67,7 @@ class VarSchema:
     description: str = ""
     default: Any = None
     choices: list[str] = field(default_factory=list)          # for ENUM
-    sentinel_label: str = ""                                   # for MOON_WINDOW
+    sentinel_label: str = ""                                   # for NUMERIC_OR_SENTINEL
     sentinel_value: str = ""                                   # e.g. "moonrise"
     group: str = "General"
     readonly: bool = False                                     # bash `readonly`
@@ -146,14 +146,18 @@ INVERSE_DEPENDENCIES: set[str] = {
 
 SCHEMA: list[VarSchema] = [
     # ── Configuration ───────────────────────────────────────────────────
-    VarSchema("FEELS_LIKE_THRESHOLD",      "Feels-Like Offset",        VarType.INTEGER,
-              "Show 'feels like' when it differs by this many °C", default=10, readonly=True,
-              group="Configuration"),
+    VarSchema("FEELS_LIKE_THRESHOLD",      "Feels-Like Offset",        VarType.NUMERIC_OR_SENTINEL,
+              "Minimum temperature difference (°C) to display 'feels like'", default=10,
+              sentinel_label="Disable", sentinel_value="disable",
+              readonly=True, group="Configuration"),
+
     VarSchema("SHOW_RAIN_FORECAST",        "Rain Forecast",            VarType.BOOLEAN,
               "Show rain warnings in the forecast", readonly=True, group="Configuration"),
+
     VarSchema("RAIN_FORECAST_THRESHOLD",   "Rain Chance Cutoff",       VarType.FLOAT,
               "Minimum probability (0–100%) to trigger a warning",
               default=0.7, readonly=True, group="Configuration"),
+
     VarSchema("RAIN_FORECAST_WINDOW",      "Forecast Lookahead",       VarType.INTEGER,
               "How many hours ahead to check for rain", default=2, readonly=True,
               group="Configuration"),
@@ -170,9 +174,11 @@ SCHEMA: list[VarSchema] = [
     VarSchema("SUNSET_WARNING_THRESHOLD",  "Sunset Lead Time",         VarType.INTEGER,
               "Alert this many minutes before sunset", default=30, readonly=True,
               group="Sunrise &amp; Sunset"),
+
     VarSchema("SHOW_SUNRISE_SUNSET_DURING_RAIN",        "Show While Raining",       VarType.BOOLEAN,
               "Display even when it's currently raining", readonly=True,
               group="Sunrise &amp; Sunset"),
+
     VarSchema("SHOW_SUNRISE_SUNSET_WITH_RAIN_FORECAST", "Show When Rain Expected",  VarType.BOOLEAN,
               "Display even when rain is in the forecast", readonly=True,
               group="Sunrise &amp; Sunset"),
@@ -180,22 +186,28 @@ SCHEMA: list[VarSchema] = [
     # ── Moonrise & Moonset ────────────────────────────────────────────────────
     VarSchema("SHOW_MOONRISE_MOONSET",                    "Moonrise &amp; Moonset",             VarType.BOOLEAN,
               "Show moonrise and moonset times", readonly=True, group="Moonrise &amp; Moonset"),
-    VarSchema("MOONRISE_WARNING_THRESHOLD",               "Moonrise Lead Time",             VarType.MOON_WINDOW,
+
+    VarSchema("MOONRISE_WARNING_THRESHOLD",               "Moonrise Lead Time",             VarType.NUMERIC_OR_SENTINEL,
               "Minutes before moonrise to alert, or immediately after sunset",
               sentinel_label="After Sunset", sentinel_value="sunset",
               readonly=True, group="Moonrise &amp; Moonset"),
+
     VarSchema("MOONSET_WARNING_THRESHOLD",                "Moonset Lead Time",              VarType.INTEGER,
               "Alert this many minutes before moonset", default=30, readonly=True,
               group="Moonrise &amp; Moonset"),
+
     VarSchema("SHOW_MOONRISE_MOONSET_DURING_DAYTIME", "Show During Daytime",               VarType.BOOLEAN,
               "Include moonrise/moonset times that fall during daylight", readonly=True,
               group="Moonrise &amp; Moonset"),
+
     VarSchema("SUPPRESS_NOT_VISIBLE_MOONRISE_MOONSET", "Suppress Non-Visible Moonrise/Moonset", VarType.BOOLEAN,
               "Suppress moonrise/moonset display when the moon is too dim to be visible",
               readonly=True, group="Moonrise &amp; Moonset"),
+
     VarSchema("SHOW_MOONRISE_MOONSET_DURING_RAIN",        "Show While Raining",             VarType.BOOLEAN,
               "Display even when it's currently raining", readonly=True,
               group="Moonrise &amp; Moonset"),
+
     VarSchema("SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST", "Show When Rain Expected",        VarType.BOOLEAN,
               "Display even when rain is in the forecast", readonly=True,
               group="Moonrise &amp; Moonset"),
@@ -204,53 +216,67 @@ SCHEMA: list[VarSchema] = [
     # ── Moon Phase ────────────────────────────────────────────────────────────
     VarSchema("MOON_PHASE_ENABLED",               "Moon Phase",                    VarType.BOOLEAN,
               "Show the current moon phase", readonly=True, group="Moon Phase"),
+
     VarSchema("LUNAR_CACHE_MAX_AGE_HOURS",                "Moon Data Cache Max Age",              VarType.INTEGER,
               "Maximum age of cached moon data in hours during active moon window", default=2, readonly=True,
               group="Moon Phase"),
-    VarSchema("MOON_PHASE_WINDOW_START",           "Display Window Start",         VarType.MOON_WINDOW,
+
+    VarSchema("MOON_PHASE_WINDOW_START",           "Display Window Start",         VarType.NUMERIC_OR_SENTINEL,
               "Minutes after sunset to begin display, or from moonrise",
               sentinel_label="Moonrise", sentinel_value="moonrise",
               readonly=True, group="Moon Phase"),
-    VarSchema("MOON_PHASE_WINDOW_DURATION",        "Display Window End",           VarType.MOON_WINDOW,
+
+    VarSchema("MOON_PHASE_WINDOW_DURATION",        "Display Window End",           VarType.NUMERIC_OR_SENTINEL,
               "How long to show it, or until moonset",
               sentinel_label="Moonset", sentinel_value="moonset",
               readonly=True, group="Moon Phase"),
+
     VarSchema("SHOW_MOONPHASE_DURING_DAYTIME",       "Show During Daytime",        VarType.BOOLEAN,
               "Display moon phase regardless of daylight hours", readonly=True,
               group="Moon Phase"),
+
     VarSchema("SUPPRESS_NOT_VISIBLE_MOONPHASE", "Suppress Non-Visible Moon Phases", VarType.BOOLEAN,
               "Suppress moon phase display when the moon is too dim to be visible",
               readonly=True, group="Moon Phase"),
+
     VarSchema("MOON_PHASE_SHOW_DURING_RAIN",       "Show While Raining",           VarType.BOOLEAN,
               "Display even when it's currently raining", readonly=True,
               group="Moon Phase"),
+
     VarSchema("MOON_PHASE_SHOW_WITH_RAIN_FORECAST", "Show When Rain Expected",      VarType.BOOLEAN,
               "Display even when rain is in the forecast", readonly=True,
               group="Moon Phase"),
+
     VarSchema("SHOW_MOONPHASE_BILINGUAL",           "Bilingual Phase Name",        VarType.BOOLEAN,
               "Show phase name in both English and Bengali", readonly=True,
               group="Moon Phase"),
+
     VarSchema("SHOW_MOONPHASE_BENGALI",             "Bengali Phase Name",          VarType.BOOLEAN,
               "Show phase name in Bengali only", readonly=True, group="Moon Phase"),
+
     VarSchema("SHOW_LUNAR_APSIDAL_SYZYGY",             "Apsidal Syzygy Label",          VarType.BOOLEAN,
               "Show supermoon, super new moon, or micromoon label when applicable",
               readonly=True, group="Moon Phase"),
-    VarSchema("ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY", "Restrict Syzygy Label to Night Visibility", VarType.BOOLEAN,
+
+    VarSchema("ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY", "Suppress Syzygy Label Not Visible at Night", VarType.BOOLEAN,
               "Only show the syzygy label when the moon is visibly above the horizon at night",
               readonly=True, group="Moon Phase"),
 
     # ── API Keys ──────────────────────────────────────────────────────────────
     VarSchema("API_KEY",       "OpenWeatherMap API Key",              VarType.STRING,
               "API key from openweathermap.org", readonly=True, group="API Keys", secret=True),
+
     VarSchema("API_KEY_TYPE",  "OpenWeatherMap Plan",                 VarType.ENUM,
               "Your OpenWeatherMap subscription tier",
               choices=["FREE", "PRO"], default="PRO", readonly=True, group="API Keys"),
+
     VarSchema("MOON_API_KEY",  "Moon API Key",             VarType.STRING,
               "API key from astroapi.byhrast.com", readonly=True, group="API Keys", secret=True),
 
     # ── Location & Timezone ───────────────────────────────────────────────────
     VarSchema("LOCATION",  "Coordinates",   VarType.STRING,
               "Latitude and longitude", readonly=True, group="Location"),
+
     VarSchema("TIMEZONE",  "Time Zone",     VarType.STRING,
               "IANA time zone (e.g. Asia/Dhaka)", readonly=True, group="Location"),
 
@@ -258,6 +284,7 @@ SCHEMA: list[VarSchema] = [
     VarSchema("MAX_CONNECTIVITY_RETRIES", "Max Retries",    VarType.INTEGER,
               "Number of attempts before giving up on connectivity", default=5, readonly=True,
               group="Network"),
+
     VarSchema("CONNECTIVITY_RETRY_DELAY", "Retry Interval", VarType.INTEGER,
               "Seconds to wait between each retry attempt", default=5, readonly=True,
               group="Network"),
@@ -500,7 +527,7 @@ class Validator:
         elif vt == VarType.ENUM:
             if val not in schema.choices:
                 return f"Must be one of: {', '.join(schema.choices)}"
-        elif vt == VarType.MOON_WINDOW:
+        elif vt == VarType.NUMERIC_OR_SENTINEL:
             if val != schema.sentinel_value:
                 try:
                     int(val)
@@ -1212,9 +1239,9 @@ class TimezoneRow(BaseRow):
             self._entry.set_text(val)
 
 
-class MoonWindowRow(BaseRow):
+class NumericOrSentinelRow(BaseRow):
     """
-    Special row for MOON_WINDOW variables.
+    Special row for NUMERIC_OR_SENTINEL variables.
     Has a checkbox (Use Sentinel) + integer spin.
     When checked: value = sentinel_value, spin disabled.
     When unchecked: value = integer from spin.
@@ -1311,8 +1338,8 @@ def make_row(entry: ConfigEntry,
     if vt == VarType.ENUM:
         return EnumRow(entry, on_change)
 
-    if vt == VarType.MOON_WINDOW:
-        return MoonWindowRow(entry, on_change)
+    if vt == VarType.NUMERIC_OR_SENTINEL:
+        return NumericOrSentinelRow(entry, on_change)
 
     raise ValueError(f"Unknown VarType: {vt}")
 
