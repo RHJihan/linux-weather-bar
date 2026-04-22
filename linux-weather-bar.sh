@@ -64,7 +64,7 @@ load_or_create_config
 : "${FEELS_LIKE_THRESHOLD:=5}"
 : "${SHOW_RAIN_FORECAST:=true}"
 : "${RAIN_FORECAST_THRESHOLD:=0.80}"
-: "${RAIN_FORECAST_WINDOW:=2}"
+: "${RAIN_FORECAST_WINDOW:=3}"
 
 # ─── Sunrise & Sunset ─────────────────────────────────────────────────────────
 : "${SHOW_SUNRISE_SUNSET:=true}"

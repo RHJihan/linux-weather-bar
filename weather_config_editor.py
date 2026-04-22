@@ -160,7 +160,7 @@ SCHEMA: list[VarSchema] = [
               default=0.7, readonly=True, group="Configuration"),
 
     VarSchema("RAIN_FORECAST_WINDOW",      "Forecast Lookahead",       VarType.INTEGER,
-              "How many hours ahead to check for rain", default=2, readonly=True,
+              "How many hours ahead to check for rain", default=3, readonly=True,
               group="Configuration"),
 
     # ── Sunrise & Sunset ────────────────────────────────────────────────
@@ -269,7 +269,7 @@ SCHEMA: list[VarSchema] = [
 
     VarSchema("API_KEY_TYPE",  "OpenWeatherMap Plan",                 VarType.ENUM,
               "Your OpenWeatherMap subscription tier",
-              choices=["FREE", "PRO"], default="PRO", readonly=True, group="API Keys"),
+              choices=["FREE", "PRO"], default="FREE", readonly=True, group="API Keys"),
 
     VarSchema("MOON_API_KEY",  "Moon API Key",             VarType.STRING,
               "API key from astroapi.byhrast.com", readonly=True, group="API Keys", secret=True),
@@ -749,14 +749,20 @@ class ConfigParser:
 class Validator:
     """Validates entry values; returns error string or empty string."""
 
-    def validate(self, entry: ConfigEntry) -> str:
+    def validate(self, entry: ConfigEntry, all_entries: Optional[dict[str, ConfigEntry]] = None) -> str:
         schema = entry.schema
         val = entry.display_value
         vt = schema.var_type
 
         if vt == VarType.INTEGER:
             try:
-                int(val)
+                int_val = int(val)
+                # Special constraint: RAIN_FORECAST_WINDOW minimum 3 hours when API_KEY_TYPE is FREE
+                if schema.key == "RAIN_FORECAST_WINDOW" and all_entries is not None:
+                    api_type_entry = all_entries.get("API_KEY_TYPE")
+                    if api_type_entry and api_type_entry.display_value == "FREE":
+                        if int_val < 3:
+                            return "FREE plan requires minimum 3-hour forecast window (3-hourly data)"
             except ValueError:
                 return f"Must be a whole number"
         elif vt == VarType.FLOAT:
@@ -1503,7 +1509,49 @@ def make_row(entry: ConfigEntry,
 class WeatherConfigWindow(Adw.ApplicationWindow):
     """Main application window."""
 
+    def _clamp_rain_forecast_if_needed(self, show_toast: bool = True) -> None:
+        """
+        Clamp RAIN_FORECAST_WINDOW to 3 if API_KEY_TYPE is FREE and value < 3.
+
+        Scenario 1: If value < 3 → clamp to 3 and show "set to 3" message
+        Scenario 2: If value >= 3 → keep as is and show "minimum is 3" message
+
+        show_toast: If False, suppress the toast (avoid duplicate from side effects)
+        """
+        api_type = self._entries.get("API_KEY_TYPE")
+        if not api_type or api_type.display_value != "FREE":
+            return
+
+        rain_window = self._entries.get("RAIN_FORECAST_WINDOW")
+        if not rain_window:
+            return
+
+        try:
+            current_val = int(rain_window.display_value)
+            if current_val < 3:
+                # Scenario 1: Value needs clamping
+                rain_window.display_value = "3"
+                if "RAIN_FORECAST_WINDOW" in self._rows:
+                    self._rows["RAIN_FORECAST_WINDOW"].reset()
+                if show_toast:
+                    self._show_toast(
+                        "Forecast window set to 3 hours (minimum for FREE plan)")
+            else:
+                # Scenario 2: Value already >= 3, just inform about the minimum
+                if show_toast:
+                    self._show_toast(
+                        "Forecast window lower limit is now 3 hours (FREE plan)")
+        except ValueError:
+            pass
+
     def _update_dependent_states(self, changed_key: str) -> None:
+        # Auto-clamp RAIN_FORECAST_WINDOW when API_KEY_TYPE changes (show toast)
+        if changed_key == "API_KEY_TYPE":
+            self._clamp_rain_forecast_if_needed(show_toast=True)
+        # When RAIN_FORECAST_WINDOW changes directly, suppress toast to avoid duplicate
+        elif changed_key == "RAIN_FORECAST_WINDOW":
+            self._clamp_rain_forecast_if_needed(show_toast=False)
+
         if changed_key not in DEPENDENCIES:
             return
 
@@ -2581,7 +2629,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # Validate all
         errors: list[str] = []
         for key, entry in self._entries.items():
-            err = self._validator.validate(entry)
+            err = self._validator.validate(entry, self._entries)
             if err:
                 errors.append(f"{entry.schema.label}: {err}")
         if errors:
