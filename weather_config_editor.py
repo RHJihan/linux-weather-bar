@@ -193,9 +193,10 @@ SCHEMA: list[VarSchema] = [
               sentinel_label="After Sunset", sentinel_value="sunset",
               readonly=True, group="Moonrise &amp; Moonset"),
 
-    VarSchema("MOONSET_WARNING_THRESHOLD",                "Moonset Lead Time",              VarType.INTEGER,
-              "Alert this many minutes before moonset", default=30, readonly=True,
-              group="Moonrise &amp; Moonset"),
+    VarSchema("MOONSET_WARNING_THRESHOLD",                "Moonset Lead Time",              VarType.NUMERIC_OR_SENTINEL,
+              "Minutes before moonset to alert, or immediately after sunset", 
+              sentinel_label="After Sunset", sentinel_value="sunset",
+              readonly=True, group="Moonrise &amp; Moonset"),
 
     VarSchema("SHOW_MOONRISE_MOONSET_DURING_DAYTIME", "Show During Daytime",               VarType.BOOLEAN,
               "Include moonrise/moonset times that fall during daylight", readonly=True,

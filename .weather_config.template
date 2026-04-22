@@ -53,9 +53,11 @@ readonly SHOW_MOONRISE_MOONSET=true
 # Controls moonrise display:
 # - "sunset": show moonrise immediately after sunset if it occurs after sunset (skip if before)
 # - Integer (e.g., 30): alert this many minutes before moonrise
-readonly MOONRISE_WARNING_THRESHOLD="45"
-# Alert this many minutes before moonset
-readonly MOONSET_WARNING_THRESHOLD="45"
+readonly MOONRISE_WARNING_THRESHOLD=45
+# Controls moonset display:
+# - "sunset": show moonset if it occurs before sunrise (skip if after)
+# - Integer (e.g., 30): alert this many minutes before moonset
+readonly MOONSET_WARNING_THRESHOLD=45
 # true → include moonrise/moonset times that fall during daylight
 readonly SHOW_MOONRISE_MOONSET_DURING_DAYTIME=false
 # Suppress moonrise/moonset when the moon is too dim to be visible

@@ -1430,13 +1430,23 @@ build_weather_line() {
 				if [[ "$is_daytime" == "true" ]] && [[ "$SHOW_MOONRISE_MOONSET_DURING_DAYTIME" != "true" ]]; then
 					:
 				else
-					local mins_to_moonset
-					mins_to_moonset=$(minutes_until_event "$_moonset_epoch")
+					if [[ "$MOONSET_WARNING_THRESHOLD" == "sunset" ]]; then
+						# Only show moonset if it's after sunset
+						if (( now >= effective_sunset_epoch && _moonset_epoch > effective_sunset_epoch )); then
+							local moonset_time
+							moonset_time=$(format_time "$_moonset_epoch")
+							line+="    Moonset: ${moonset_time^^}"
+						fi
+					else
+						# Numeric threshold: existing behavior
+						local mins_to_moonset
+						mins_to_moonset=$(minutes_until_event "$_moonset_epoch")
 
-					if (( mins_to_moonset > 0 && mins_to_moonset <= MOONSET_WARNING_THRESHOLD )); then
-						local moonset_time
-						moonset_time=$(format_time "$_moonset_epoch")
-						line+="    Moonset: ${moonset_time^^}"
+						if (( mins_to_moonset > 0 && mins_to_moonset <= MOONSET_WARNING_THRESHOLD )); then
+							local moonset_time
+							moonset_time=$(format_time "$_moonset_epoch")
+							line+="    Moonset: ${moonset_time^^}"
+						fi
 					fi
 				fi
 			fi
