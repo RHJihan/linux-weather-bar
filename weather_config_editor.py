@@ -121,11 +121,11 @@ DEPENDENCIES: dict[str, list[str]] = {
         "MOON_PHASE_SHOW_WITH_RAIN_FORECAST",
         "SHOW_MOONPHASE_BENGALI",
         "SHOW_MOONPHASE_BILINGUAL",
-        "SHOW_LUNAR_APSIDAL_SYZYGY",
-        "ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY",
+        "SHOW_APSIDAL_MOON_EVENTS",
+        "SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS",
     ],
-    "SHOW_LUNAR_APSIDAL_SYZYGY": [
-        "ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY",
+    "SHOW_APSIDAL_MOON_EVENTS": [
+        "SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS",
     ],
     "SHOW_MOONRISE_MOONSET": [
         "MOONRISE_WARNING_THRESHOLD",
@@ -218,7 +218,7 @@ SCHEMA: list[VarSchema] = [
     VarSchema("MOON_PHASE_ENABLED",               "Moon Phase",                    VarType.BOOLEAN,
               "Show the current moon phase", readonly=True, group="Moon Phase"),
 
-    VarSchema("LUNAR_CACHE_MAX_AGE_HOURS",                "Moon Data Cache Max Age",              VarType.INTEGER,
+    VarSchema("MOON_DATA_CACHE_MAX_AGE",                "Moon Data Cache Max Age",              VarType.INTEGER,
               "Maximum age of cached moon data in hours during active moon window", default=2, readonly=True,
               group="Moon Phase"),
 
@@ -255,12 +255,12 @@ SCHEMA: list[VarSchema] = [
     VarSchema("SHOW_MOONPHASE_BENGALI",             "Bengali Phase Name",          VarType.BOOLEAN,
               "Show phase name in Bengali only", readonly=True, group="Moon Phase"),
 
-    VarSchema("SHOW_LUNAR_APSIDAL_SYZYGY",             "Apsidal Syzygy Label",          VarType.BOOLEAN,
+    VarSchema("SHOW_APSIDAL_MOON_EVENTS",             "Apsidal Moon Events",          VarType.BOOLEAN,
               "Show supermoon, super new moon, or micromoon label when applicable",
               readonly=True, group="Moon Phase"),
 
-    VarSchema("ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY", "Suppress Syzygy Label Not Visible at Night", VarType.BOOLEAN,
-              "Only show the syzygy label when the moon is visibly above the horizon at night",
+    VarSchema("SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS", "Suppress Non-Visible Night Apsidal Moon Events", VarType.BOOLEAN,
+              "Show apsidal moon events only when the Moon is visibly above the horizon at night",
               readonly=True, group="Moon Phase"),
 
     # ── API Keys ──────────────────────────────────────────────────────────────

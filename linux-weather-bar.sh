@@ -84,7 +84,7 @@ load_or_create_config
 
 # ─── Moon Phase ───────────────────────────────────────────────────────────────
 : "${MOON_PHASE_ENABLED:=true}"
-: "${LUNAR_CACHE_MAX_AGE_HOURS:=2}"
+: "${MOON_DATA_CACHE_MAX_AGE:=2}"
 : "${MOON_PHASE_WINDOW_START:=moonrise}"
 : "${MOON_PHASE_WINDOW_DURATION:=moonset}"
 : "${SHOW_MOONPHASE_DURING_DAYTIME:=false}"
@@ -93,8 +93,8 @@ load_or_create_config
 : "${MOON_PHASE_SHOW_WITH_RAIN_FORECAST:=false}"
 : "${SHOW_MOONPHASE_BENGALI:=false}"
 : "${SHOW_MOONPHASE_BILINGUAL:=false}"
-: "${SHOW_LUNAR_APSIDAL_SYZYGY:=true}"
-: "${ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY:=false}"
+: "${SHOW_APSIDAL_MOON_EVENTS:=true}"
+: "${SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS:=false}"
 
 # ─── Validate Required Credentials ────────────────────────────────────────────
 if [[ -z "${MOON_API_KEY:-}" ]] && [[ "${MOON_PHASE_ENABLED}" == "true" ]]; then
@@ -635,7 +635,7 @@ _save_moon_cache() {
 #   - We are inside the active lunar window (past moonrise, before moonset)
 # AND either:
 #   a) The cache was fetched before moonrise (position/illumination data stale), OR
-#   b) The cache has exceeded LUNAR_CACHE_MAX_AGE_HOURS since retrieval
+#   b) The cache has exceeded MOON_DATA_CACHE_MAX_AGE since retrieval
 #
 # Arguments:
 #   $1 - cache JSON string
@@ -669,7 +669,7 @@ _is_moon_cache_stale() {
     fi
 
     # (b) Older than configured max age while still inside lunar window
-    local max_age_seconds=$(( LUNAR_CACHE_MAX_AGE_HOURS * 3600 ))
+    local max_age_seconds=$(( MOON_DATA_CACHE_MAX_AGE * 3600 ))
     if (( moonset_epoch == 0 || retrieved_at_epoch < moonset_epoch )) && \
        (( now - retrieved_at_epoch > max_age_seconds )); then
         return 0
@@ -699,7 +699,7 @@ _is_moon_cache_stale() {
 #
 # Globals:
 #   MOON_DATA_FILE, MOON_API_URL, MOON_API_KEY, LOCATION, TIMEZONE,
-#   LUNAR_CACHE_MAX_AGE_HOURS
+#   MOON_DATA_CACHE_MAX_AGE
 # Arguments:
 #   (none)
 # Outputs:
@@ -985,7 +985,7 @@ is_moon_visible_at_night() {
 #   Supermoon / Super New Moon – distance ≤ 367 600 km
 #   Micromoon                  – distance ≥ 401 000 km
 #
-# When ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY is true, the label is
+# When SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS is true, the label is
 # suppressed if the moon is not visible during nighttime hours — either
 # because illumination is below 5% (lost in solar glare) or because
 # moonset falls before sunset AND moonrise before nightfall.
@@ -1009,7 +1009,7 @@ get_lunar_apsidal_syzygy() {
 	local moonset_epoch="${3:-0}"
 	local effective_sunset_epoch="${4:-0}"
 
-	[[ "$SHOW_LUNAR_APSIDAL_SYZYGY" == "true" ]] || return 0
+	[[ "$SHOW_APSIDAL_MOON_EVENTS" == "true" ]] || return 0
 	[[ -n "$moon_data" ]] || return 0
 
 	local phase distance_km illumination_pct
@@ -1024,7 +1024,7 @@ get_lunar_apsidal_syzygy() {
 	[[ -n "$distance_km" ]] || return 0
 
 	# ── Night visibility gate ──────────────────────────────────────────────────
-	if [[ "$ONLY_SHOW_VISIBLE_NIGHT_APSIDAL_SYZYGY" == "true" ]]; then
+	if [[ "$SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS" == "true" ]]; then
 		if ! is_moon_visible_at_night \
 				"$moonrise_epoch" "$moonset_epoch" \
 				"$effective_sunset_epoch" "$illumination_pct"; then
