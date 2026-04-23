@@ -147,7 +147,7 @@ INVERSE_DEPENDENCIES: set[str] = {
 
 SCHEMA: list[VarSchema] = [
     # ── Configuration ───────────────────────────────────────────────────
-    VarSchema("FEELS_LIKE_THRESHOLD",      "Feels-Like Offset",        VarType.NUMERIC_OR_SENTINEL,
+    VarSchema("FEELS_LIKE_THRESHOLD",      "Feels-Like Threshold",        VarType.NUMERIC_OR_SENTINEL,
               "Minimum temperature difference (°C) to display 'feels like'", default=10,
               sentinel_label="Disable", sentinel_value="disable",
               readonly=True, group="Configuration"),
@@ -155,11 +155,11 @@ SCHEMA: list[VarSchema] = [
     VarSchema("SHOW_RAIN_FORECAST",        "Rain Forecast",            VarType.BOOLEAN,
               "Show rain warnings in the forecast", readonly=True, group="Configuration"),
 
-    VarSchema("RAIN_FORECAST_THRESHOLD",   "Rain Chance Cutoff",       VarType.FLOAT,
+    VarSchema("RAIN_FORECAST_THRESHOLD",   "Rain Probability Threshold",       VarType.FLOAT,
               "Minimum probability (0–100%) to trigger a warning",
               default=0.7, readonly=True, group="Configuration"),
 
-    VarSchema("RAIN_FORECAST_WINDOW",      "Forecast Lookahead",       VarType.INTEGER,
+    VarSchema("RAIN_FORECAST_WINDOW",      "Rain Forecast Lookahead Window",       VarType.INTEGER,
               "How many hours ahead to check for rain", default=3, readonly=True,
               group="Configuration"),
 
