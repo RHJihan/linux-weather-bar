@@ -194,7 +194,7 @@ SCHEMA: list[VarSchema] = [
               readonly=True, group="Moonrise &amp; Moonset"),
 
     VarSchema("MOONSET_WARNING_THRESHOLD",                "Moonset Lead Time",              VarType.NUMERIC_OR_SENTINEL,
-              "Minutes before moonset to alert, or immediately after sunset", 
+              "Minutes before moonset to alert, or immediately after sunset",
               sentinel_label="After Sunset", sentinel_value="sunset",
               readonly=True, group="Moonrise &amp; Moonset"),
 
@@ -1800,7 +1800,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 return text
         if key in ("moonrise", "moonset"):
             try:
-                dt = datetime.fromtimestamp(int(float(text)))
+                epoch_val = int(float(text))
+                if epoch_val == 0:
+                    return "Not visible"
+                dt = datetime.fromtimestamp(epoch_val)
                 return dt.strftime("%I:%M %p").upper()
             except (ValueError, TypeError):
                 return text
@@ -1951,26 +1954,32 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             # is only up during daytime/evening — not usefully visible after dark.
             # Sunset time is read from sun-data.json (unix timestamp); nightfall is
             # sunset + 60 min. Falls back to 19:00 / 20:00 if file is unavailable.
+            # Skip this check if moonset is 0 (not visible).
             try:
-                def _epoch_to_mins(s: str) -> int:
-                    """Convert unix epoch string to local minutes since midnight."""
-                    dt = datetime.fromtimestamp(int(float(s)))
-                    return dt.hour * 60 + dt.minute
+                moonset_ep_check = int(
+                    float(moonset_str)) if moonset_str else 0
 
-                moonset_min = _epoch_to_mins(moonset_str)
-                moonrise_min = _epoch_to_mins(moonrise_str)
+                # Only perform night visibility check if moonset is valid
+                if moonset_ep_check > 0:
+                    def _epoch_to_mins(s: str) -> int:
+                        """Convert unix epoch string to local minutes since midnight."""
+                        dt = datetime.fromtimestamp(int(float(s)))
+                        return dt.hour * 60 + dt.minute
 
-                sun_data = WeatherConfigWindow._load_sun_data()
-                sunset_min = WeatherConfigWindow._sunset_local_minutes(
-                    sun_data, tz_name)
-                if sunset_min is not None:
-                    nightfall = sunset_min + 60   # 60 min after sunset = start of night
-                else:
-                    sunset_min = 19 * 60   # fallback: 19:00
-                    nightfall = 20 * 60   # fallback: 20:00
+                    moonset_min = _epoch_to_mins(moonset_str)
+                    moonrise_min = _epoch_to_mins(moonrise_str)
 
-                if moonset_min < sunset_min and moonrise_min < nightfall:
-                    not_visible = True
+                    sun_data = WeatherConfigWindow._load_sun_data()
+                    sunset_min = WeatherConfigWindow._sunset_local_minutes(
+                        sun_data, tz_name)
+                    if sunset_min is not None:
+                        nightfall = sunset_min + 60   # 60 min after sunset = start of night
+                    else:
+                        sunset_min = 19 * 60   # fallback: 19:00
+                        nightfall = 20 * 60   # fallback: 20:00
+
+                    if moonset_min < sunset_min and moonrise_min < nightfall:
+                        not_visible = True
             except Exception:
                 pass  # malformed times – skip this check
 
@@ -2075,24 +2084,29 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         if not not_visible:
             try:
-                def _epoch_to_mins(s: str) -> int:
-                    dt = datetime.fromtimestamp(int(float(s)))
-                    return dt.hour * 60 + dt.minute
+                moonset_ep_check = int(
+                    float(moonset_str)) if moonset_str else 0
 
-                moonset_min = _epoch_to_mins(moonset_str)
-                moonrise_min = _epoch_to_mins(moonrise_str)
+                # Only perform night visibility check if moonset is valid
+                if moonset_ep_check > 0:
+                    def _epoch_to_mins(s: str) -> int:
+                        dt = datetime.fromtimestamp(int(float(s)))
+                        return dt.hour * 60 + dt.minute
 
-                sun_data = WeatherConfigWindow._load_sun_data()
-                sunset_min = WeatherConfigWindow._sunset_local_minutes(
-                    sun_data, tz_name)
-                if sunset_min is not None:
-                    nightfall = sunset_min + 60
-                else:
-                    sunset_min = 19 * 60
-                    nightfall = 20 * 60
+                    moonset_min = _epoch_to_mins(moonset_str)
+                    moonrise_min = _epoch_to_mins(moonrise_str)
 
-                if moonset_min < sunset_min and moonrise_min < nightfall:
-                    not_visible = True
+                    sun_data = WeatherConfigWindow._load_sun_data()
+                    sunset_min = WeatherConfigWindow._sunset_local_minutes(
+                        sun_data, tz_name)
+                    if sunset_min is not None:
+                        nightfall = sunset_min + 60
+                    else:
+                        sunset_min = 19 * 60
+                        nightfall = 20 * 60
+
+                    if moonset_min < sunset_min and moonrise_min < nightfall:
+                        not_visible = True
             except Exception:
                 pass
 
