@@ -1865,6 +1865,17 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             return None
 
     @staticmethod
+    def _get_sun_epochs(sun_data: dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+        """
+        Return (sunset_epoch, sunrise_epoch) as raw Unix integers from sun_data,
+        or (None, None) if either value is absent or unreadable.
+        """
+        try:
+            return int(sun_data["sunset"]), int(sun_data["sunrise"])
+        except (KeyError, ValueError, TypeError):
+            return None, None
+
+    @staticmethod
     def _compute_moon_alert(data: dict[str, Any], tz_name: str = "") -> Optional[str]:
         """
         Return a one-line alert string combining all applicable conditions,
@@ -1945,41 +1956,36 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # ── Not visible at night ──────────────────────────────────────────────
         not_visible = False
 
-        # Very thin crescent / new moon → almost never visible
+        # Condition 1: illumination too low → short-circuit (mirrors bash is_moon_too_dim)
         if illumination < 5.0:
             not_visible = True
 
+        # Condition 2: moon's arc must NOT be entirely within the daytime window.
+        #
+        # The moon is a pure day-moon (not visible at night) only when BOTH:
+        #   • moonrise >= sunrise  (rises after dark ends)
+        #   • moonset  <= sunset   (sets before dark begins)
+        # If either end sticks into the night the moon is visible.
+        #
+        # This covers both nightly windows with a single check:
+        #   – moonrise < sunrise  → was up during last night (pre-dawn visible)
+        #   – moonset  > sunset   → still up during tonight (post-dusk visible)
+        #
+        # Unknown epochs (0 / missing) → assume visible; don't suppress.
         if not not_visible:
-            # Moonset before sunset AND moonrise before nightfall means the moon
-            # is only up during daytime/evening — not usefully visible after dark.
-            # Sunset time is read from sun-data.json (unix timestamp); nightfall is
-            # sunset + 60 min. Falls back to 19:00 / 20:00 if file is unavailable.
-            # Skip this check if moonset is 0 (not visible).
             try:
-                moonset_ep_check = int(
-                    float(moonset_str)) if moonset_str else 0
+                moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
+                moonset_ep  = int(float(moonset_str))  if moonset_str  else 0
 
-                # Only perform night visibility check if moonset is valid
-                if moonset_ep_check > 0:
-                    def _epoch_to_mins(s: str) -> int:
-                        """Convert unix epoch string to local minutes since midnight."""
-                        dt = datetime.fromtimestamp(int(float(s)))
-                        return dt.hour * 60 + dt.minute
-
-                    moonset_min = _epoch_to_mins(moonset_str)
-                    moonrise_min = _epoch_to_mins(moonrise_str)
-
+                if moonrise_ep > 0 and moonset_ep > 0:
                     sun_data = WeatherConfigWindow._load_sun_data()
-                    sunset_min = WeatherConfigWindow._sunset_local_minutes(
-                        sun_data, tz_name)
-                    if sunset_min is not None:
-                        nightfall = sunset_min + 60   # 60 min after sunset = start of night
-                    else:
-                        sunset_min = 19 * 60   # fallback: 19:00
-                        nightfall = 20 * 60   # fallback: 20:00
+                    sunset_ep, sunrise_ep = WeatherConfigWindow._get_sun_epochs(sun_data)
 
-                    if moonset_min < sunset_min and moonrise_min < nightfall:
-                        not_visible = True
+                    if sunset_ep is not None and sunrise_ep is not None:
+                        if moonrise_ep >= sunrise_ep and moonset_ep <= sunset_ep:
+                            not_visible = True
+                    # else: sun epochs unknown → assume visible
+                # else: moon epochs unknown → assume visible
             except Exception:
                 pass  # malformed times – skip this check
 
@@ -2078,37 +2084,34 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # ── Not visible at night ──────────────────────────────────────────────
         not_visible = False
 
-        # Very thin crescent / new moon → almost never visible
+        # Condition 1: illumination too low → short-circuit (mirrors bash is_moon_too_dim)
         if illumination < 5.0:
             not_visible = True
 
+        # Condition 2: moon's arc must NOT be entirely within the daytime window.
+        #
+        # The moon is a pure day-moon (not visible at night) only when BOTH:
+        #   • moonrise >= sunrise  (rises after dark ends)
+        #   • moonset  <= sunset   (sets before dark begins)
+        # If either end sticks into the night the moon is visible.
+        #
+        # Unknown epochs (0 / missing) → assume visible; don't suppress.
         if not not_visible:
             try:
-                moonset_ep_check = int(
-                    float(moonset_str)) if moonset_str else 0
+                moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
+                moonset_ep  = int(float(moonset_str))  if moonset_str  else 0
 
-                # Only perform night visibility check if moonset is valid
-                if moonset_ep_check > 0:
-                    def _epoch_to_mins(s: str) -> int:
-                        dt = datetime.fromtimestamp(int(float(s)))
-                        return dt.hour * 60 + dt.minute
-
-                    moonset_min = _epoch_to_mins(moonset_str)
-                    moonrise_min = _epoch_to_mins(moonrise_str)
-
+                if moonrise_ep > 0 and moonset_ep > 0:
                     sun_data = WeatherConfigWindow._load_sun_data()
-                    sunset_min = WeatherConfigWindow._sunset_local_minutes(
-                        sun_data, tz_name)
-                    if sunset_min is not None:
-                        nightfall = sunset_min + 60
-                    else:
-                        sunset_min = 19 * 60
-                        nightfall = 20 * 60
+                    sunset_ep, sunrise_ep = WeatherConfigWindow._get_sun_epochs(sun_data)
 
-                    if moonset_min < sunset_min and moonrise_min < nightfall:
-                        not_visible = True
+                    if sunset_ep is not None and sunrise_ep is not None:
+                        if moonrise_ep >= sunrise_ep and moonset_ep <= sunset_ep:
+                            not_visible = True
+                    # else: sun epochs unknown → assume visible
+                # else: moon epochs unknown → assume visible
             except Exception:
-                pass
+                pass  # malformed times – skip this check
 
         if not_visible:
             alerts.append("Not visible at night.")
