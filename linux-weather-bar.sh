@@ -632,15 +632,20 @@ _save_moon_cache() {
 # Determine whether a date-matched moon cache entry needs refreshing.
 #
 # A cache is stale when both of the following are true:
-#   - We are inside the active lunar window (past moonrise, before moonset)
+#   - We are inside the active lunar window (past window_start, before window_end)
+#     (using inferred window if any rise/set data is missing)
 # AND either:
-#   a) The cache was fetched before moonrise (position/illumination data stale), OR
+#   a) The cache was fetched before the window start (position/illumination stale), OR
 #   b) The cache has exceeded MOON_DATA_CACHE_MAX_AGE since retrieval
+#
+# The inferred window is used instead of requiring both moonrise and moonset,
+# ensuring cache freshness even when partial lunar data is returned.
 #
 # Arguments:
 #   $1 - cache JSON string
 #   $2 - now (epoch)
-#   $3 - moonset_epoch (0 if unknown)
+#   $3 - cached_moonrise_epoch (from cache; 0 if unknown/invalid)
+#   $4 - cached_moonset_epoch  (from cache; 0 if unknown/invalid)
 # Returns:
 #   0 (true)  if stale
 #   1 (false) if fresh or indeterminate
@@ -648,30 +653,36 @@ _save_moon_cache() {
 _is_moon_cache_stale() {
     local cache="$1"
     local now="$2"
-    local moonset_epoch="$3"
+    local cached_moonrise_epoch="${3:-0}"
+    local cached_moonset_epoch="${4:-0}"
 
-    local retrieved_at_epoch=0 cached_moonrise_epoch
+    local retrieved_at_epoch=0
     retrieved_at_epoch=$(jq -r '.retrieved_at // 0' <<<"$cache" 2>/dev/null)
     retrieved_at_epoch=${retrieved_at_epoch:-0}
-    cached_moonrise_epoch=$(jq -r '.moonrise // 0' <<<"$cache" 2>/dev/null)
-    cached_moonrise_epoch=${cached_moonrise_epoch:-0}
 
-    # Cannot determine staleness without fetch timestamp and moonrise
-    (( retrieved_at_epoch > 0 && cached_moonrise_epoch > 0 )) || return 1
+    # Cannot determine staleness without fetch timestamp
+    (( retrieved_at_epoch > 0 )) || return 1
+
+    # Get effective lunar window (actual or inferred from partial data)
+    local window_start window_end
+    IFS=$'\t' read -r window_start window_end \
+        <<<"$(get_effective_lunar_window "$cached_moonrise_epoch" "$cached_moonset_epoch")"
+
+    # Cannot determine staleness without valid window bounds
+    (( window_start > 0 && window_end > 0 )) || return 1
 
     # Only check staleness inside the active lunar window
-    (( now >= cached_moonrise_epoch )) || return 1
-    (( moonset_epoch == 0 || now < moonset_epoch )) || return 1
+    (( now >= window_start )) || return 1
+    (( now < window_end )) || return 1
 
-    # (a) Fetched before moonrise — position/illumination data is pre-moonrise stale
-    if (( retrieved_at_epoch < cached_moonrise_epoch )); then
+    # (a) Fetched before window start — position/illumination data is stale
+    if (( retrieved_at_epoch < window_start )); then
         return 0
     fi
 
     # (b) Older than configured max age while still inside lunar window
     local max_age_seconds=$(( MOON_DATA_CACHE_MAX_AGE * 3600 ))
-    if (( moonset_epoch == 0 || retrieved_at_epoch < moonset_epoch )) && \
-       (( now - retrieved_at_epoch > max_age_seconds )); then
+    if (( now - retrieved_at_epoch > max_age_seconds )); then
         return 0
     fi
 
@@ -708,20 +719,26 @@ _is_moon_cache_stale() {
 #   0 always
 #######################################
 get_moon_data() {
-    local cache now today needed_date cached_date moonset_epoch
+    local cache now today needed_date cached_date cached_moonrise_epoch cached_moonset_epoch
 
     cache=$(load_moon_cache)
     now=$(date +%s)
     today=$(date +"%d/%m/%Y")
 
     cached_date=$(jq -r '.date // ""' <<<"$cache" 2>/dev/null) || cached_date=""
-    moonset_epoch=$(jq -r '.moonset // 0' <<<"$cache" 2>/dev/null)
-    moonset_epoch=${moonset_epoch:-0}
+    cached_moonrise_epoch=$(jq -r '.moonrise // 0' <<<"$cache" 2>/dev/null)
+    cached_moonrise_epoch=${cached_moonrise_epoch:-0}
+    cached_moonset_epoch=$(jq -r '.moonset // 0' <<<"$cache" 2>/dev/null)
+    cached_moonset_epoch=${cached_moonset_epoch:-0}
 
     # Determine needed date:
     # Active lunar cycle → keep the date the cache already holds (today or yesterday).
+    # Uses inferred window when data is partial, maintaining cache validity.
     # Moonset past (or no usable cache) → need today's data.
-    if [[ -n "$cached_date" ]] && (( moonset_epoch > 0 && moonset_epoch > now )); then
+    local cache_window_end
+    cache_window_end=$(cut -d$'\t' -f2 <<< "$(get_effective_lunar_window "$cached_moonrise_epoch" "$cached_moonset_epoch")")
+    
+    if [[ -n "$cached_date" ]] && (( cache_window_end > 0 && cache_window_end > now )); then
         needed_date="$cached_date"
     else
         needed_date="$today"
@@ -729,7 +746,7 @@ get_moon_data() {
 
     # Cache hit: date matches — return immediately or refresh if stale
     if [[ "$cached_date" == "$needed_date" ]]; then
-        if ! _is_moon_cache_stale "$cache" "$now" "$moonset_epoch"; then
+        if ! _is_moon_cache_stale "$cache" "$now" "$cached_moonrise_epoch" "$cached_moonset_epoch"; then
             echo "$cache"
             return 0
         fi
@@ -1115,22 +1132,112 @@ resolve_window_end() {
 }
 
 #######################################
+# Infer the lunar window bounds when rise/set data is incomplete.
+#
+# Fallback Logic:
+#   If moonset_epoch == 0 (missing/invalid):
+#       Inferred window: moonrise_epoch → moonrise_epoch + 12h 25m
+#   If moonrise_epoch == 0 (missing/invalid):
+#       Inferred window: moonset_epoch - 12h 25m → moonset_epoch
+#   If both are valid (non-zero):
+#       Return actual data (no inference needed)
+#
+# Note:
+#   The 12h 25m window (44700 seconds) is a standard astronomical lunar
+#   visibility duration, used when actual rise/set times are unavailable.
+#
+# Arguments:
+#   $1 - moonrise_epoch (0 if unavailable)
+#   $2 - moonset_epoch  (0 if unavailable)
+# Outputs:
+#   Tab-separated: inferred_start_epoch<TAB>inferred_end_epoch<TAB>has_fallback_flag
+#   has_fallback_flag is "true" if ANY inference applied; "false" if using actual data
+# Returns:
+#   0 always
+#######################################
+infer_lunar_window_bounds() {
+	local moonrise_epoch="$1"
+	local moonset_epoch="$2"
+
+	# Standard lunar visibility window in seconds: 12h 25m
+	local LUNAR_WINDOW_DURATION=44700
+
+	local inferred_start inferred_end has_fallback
+
+	# Case 1: Both valid — use actual data
+	if (( moonrise_epoch > 0 && moonset_epoch > 0 )); then
+		inferred_start="$moonrise_epoch"
+		inferred_end="$moonset_epoch"
+		has_fallback="false"
+	# Case 2: Only moonrise is valid — infer from moonrise
+	elif (( moonrise_epoch > 0 )); then
+		inferred_start="$moonrise_epoch"
+		inferred_end=$(( moonrise_epoch + LUNAR_WINDOW_DURATION ))
+		has_fallback="true"
+	# Case 3: Only moonset is valid — infer from moonset
+	elif (( moonset_epoch > 0 )); then
+		inferred_start=$(( moonset_epoch - LUNAR_WINDOW_DURATION ))
+		inferred_end="$moonset_epoch"
+		has_fallback="true"
+	# Case 4: Neither valid — return zeros
+	else
+		inferred_start=0
+		inferred_end=0
+		has_fallback="false"
+	fi
+
+	printf "%s\t%s\t%s\n" "$inferred_start" "$inferred_end" "$has_fallback"
+}
+
+#######################################
+# Determine the effective lunar window: either actual or inferred.
+#
+# For most purposes (cache staleness, moon phase display), this returns
+# the best available lunar window. For announcements (moonrise/moonset),
+# call parse_moon_times directly to enforce strict API-data-only rule.
+#
+# Arguments:
+#   $1 - moonrise_epoch (from API; 0 if unknown)
+#   $2 - moonset_epoch  (from API; 0 if unknown)
+# Outputs:
+#   Tab-separated: window_start<TAB>window_end
+# Returns:
+#   0 always
+#######################################
+get_effective_lunar_window() {
+	local moonrise_epoch="$1"
+	local moonset_epoch="$2"
+
+	local inferred_start inferred_end has_fallback
+	IFS=$'\t' read -r inferred_start inferred_end has_fallback \
+		<<<"$(infer_lunar_window_bounds "$moonrise_epoch" "$moonset_epoch")"
+
+	printf "%s\t%s\n" "$inferred_start" "$inferred_end"
+}
+
+#######################################
 # Determine whether to show moon phase and return the formatted string.
 #
 # Shows moon if ALL conditions are met:
 # 1. MOON_PHASE_ENABLED is true (master kill switch)
 # 2. Current time is between effective sunset and sunrise (solar window)
-# 3. Moon is visible (between moonrise and moonset, lunar window)
+# 3. Moon is visible (within effective lunar window, actual or inferred)
 # 4. Current time is within display window (configured start/end)
 # 5. Not suppressed by rain conditions
 # 6. Not suppressed by SUPPRESS_NOT_VISIBLE_MOONPHASE (if enabled)
 #
+# Lunar Window Strategy:
+# The effective lunar window is:
+#   - The actual [moonrise, moonset] if both API values are valid (non-zero)
+#   - Otherwise, an inferred 12h 25m window based on whichever value exists
+#   - Never suppressed due to incomplete rise/set data
+#
 # Window Calculation:
 # Solar Window: effective_sunset_epoch (Day N) → effective_sunrise_epoch (Day N+1)
-# Lunar Window: moonrise_epoch → moonset_epoch
-# Final Window: [max(effective_sunset, moonrise), min(effective_sunrise, moonset)] ∩ [window_start, window_end]
-#   window_start = max(effective_sunset, moonrise) + MOON_PHASE_WINDOW_START minutes
-#   window_end   = clamped to effective_sunrise by resolve_window_end (solar ceiling enforced there)
+# Lunar Window: Effective window (actual or inferred via get_effective_lunar_window)
+# Final Window: intersection of solar and lunar, further refined by user-configured display window
+#   window_start = max(effective_sunset, lunar_window_start) + MOON_PHASE_WINDOW_START minutes
+#   window_end   = clamped to effective_sunrise by resolve_window_end (solar ceiling)
 #
 # Time Comparison: All comparisons use Unix epoch (seconds), eliminating
 # "crossing midnight" issues that would arise from HH:MM string comparisons.
@@ -1138,7 +1245,7 @@ resolve_window_end() {
 # Globals:
 #   MOON_PHASE_ENABLED, MOON_PHASE_WINDOW_START, MOON_PHASE_WINDOW_DURATION,
 #   MOON_PHASE_SHOW_DURING_RAIN, MOON_PHASE_SHOW_WITH_RAIN_FORECAST,
-#   SUPPRESS_NOT_VISIBLE_MOONPHASE
+#   SUPPRESS_NOT_VISIBLE_MOONPHASE, SHOW_MOONPHASE_DURING_DAYTIME
 # Arguments:
 #   $1 - effective_sunset_epoch  (yesterday's if overnight, today's otherwise)
 #   $2 - effective_sunrise_epoch (tomorrow's if past today's sunrise)
@@ -1167,7 +1274,7 @@ resolve_moon_phase() {
 		return 0
 	fi
 
-	# 3. Resolve moon times (moonrise/moonset)
+	# 3. Resolve moon times (moonrise/moonset from API)
 	local moonrise_epoch moonset_epoch
 	IFS=$'\t' read -r moonrise_epoch moonset_epoch \
 		<<<"$(parse_moon_times "$moon_data" "$effective_sunrise_epoch")"
@@ -1189,48 +1296,47 @@ resolve_moon_phase() {
 		fi
 	fi
 
-	# 5. Handle "not visible" corner cases first (before window check)
-	# If moonrise is "Not visible" — treat as effective_sunset + 30 min
-	if (( moonrise_epoch == 0 )); then
-		moonrise_epoch=$(( effective_sunset_epoch + 1800 ))
-	fi
-	# If moonset is "Not visible" — treat as 23:59 of the current day
-	if (( moonset_epoch == 0 )); then
-		moonset_epoch=$(date -d "$(date +%Y-%m-%d) 23:59:00" +%s 2>/dev/null || \
-		                date -j -f "%Y-%m-%d %H:%M:%S" "$(date +%Y-%m-%d) 23:59:00" +%s 2>/dev/null)
-	fi
+	# 5. Get effective lunar window (actual or inferred from partial API data)
+	# Uses 12h 25m fallback window if either moonrise or moonset is 0.
+	# This ensures moon phase display even with incomplete rise/set data.
+	local lunar_window_start lunar_window_end
+	IFS=$'\t' read -r lunar_window_start lunar_window_end \
+		<<<"$(get_effective_lunar_window "$moonrise_epoch" "$moonset_epoch")"
 
-	# Post-fallback midnight-crossing correction:
-	# If moonrise_epoch was just resolved from "Not visible" (effective_sunset+30min),
-	# and moonset_epoch is a real HH:MM earlier in the day (e.g., 06:20),
-	# moonset is actually NEXT DAY relative to moonrise — add 86400.
-	if (( moonset_epoch > 0 && moonrise_epoch > 0 && moonset_epoch < moonrise_epoch )); then
-		moonset_epoch=$(( moonset_epoch + 86400 ))
-	fi
+	# Cannot proceed without valid lunar window
+	(( lunar_window_start > 0 && lunar_window_end > 0 )) || return 0
 
-	# 6. Check lunar window (moonrise → moonset)
-	# After handling "not visible", both epochs should be valid
-	if ! (( now >= moonrise_epoch && now < moonset_epoch )); then
+	# 6. Check if current time is within lunar window
+	# (actual or inferred from partial data)
+	if ! (( now >= lunar_window_start && now < lunar_window_end )); then
 		# Outside lunar window — suppress moon phase
 		return 0
 	fi
 
-	# 7. Resolve display window (user-configured start/end)
-	# Anchor is the later of effective_sunset or moonrise (intersection start)
+	# 7. Handle day-boundary edge case:
+	# If actual moonrise exists but moonset was inferred, ensure moonset > moonrise
+	# (similarly, if moonset exists but moonrise was inferred).
+	# The infer function already handles this, but validate window consistency.
+	if (( lunar_window_end <= lunar_window_start )); then
+		return 0  # Invalid window detected — suppress
+	fi
+
+	# 8. Resolve display window (user-configured start/end)
+	# Anchor is the later of effective_sunset or lunar_window_start (intersection start)
 	local window_anchor
-	window_anchor=$(( effective_sunset_epoch > moonrise_epoch ? effective_sunset_epoch : moonrise_epoch ))
+	window_anchor=$(( effective_sunset_epoch > lunar_window_start ? effective_sunset_epoch : lunar_window_start ))
 
 	local window_start window_end
 	window_start=$(resolve_window_start "$MOON_PHASE_WINDOW_START" "$window_anchor" "$moonrise_epoch")
-	window_end=$(resolve_window_end "$MOON_PHASE_WINDOW_DURATION" "$window_start" "$moonset_epoch" "$effective_sunrise_epoch")
+	window_end=$(resolve_window_end "$MOON_PHASE_WINDOW_DURATION" "$window_start" "$lunar_window_end" "$effective_sunrise_epoch")
 
-	# 8. Check if current time is within display window
+	# 9. Check if current time is within display window
 	if ! (( now >= window_start && now < window_end )); then
 		# Outside display window — suppress moon phase
 		return 0
 	fi
 
-	# 9. Check rain suppression (after all other conditions pass)
+	# 10. Check rain suppression (after all other conditions pass)
 	if [[ "$is_currently_raining" == "true" ]] && [[ "$MOON_PHASE_SHOW_DURING_RAIN" != "true" ]]; then
 		# Currently raining and suppression enabled — suppress moon phase
 		return 0
@@ -1241,7 +1347,7 @@ resolve_moon_phase() {
 		return 0
 	fi
 
-	# 10. Suppress moon phase if moon is not visible (day or night).
+	# 11. Suppress moon phase if moon is not visible (day or night).
 	if [[ "$SUPPRESS_NOT_VISIBLE_MOONPHASE" == "true" ]]; then
 		local illumination_pct
 		illumination_pct=$(parse_illumination_pct "$moon_data")
@@ -1251,15 +1357,17 @@ resolve_moon_phase() {
 		fi
 	fi
 
-	# 11. All conditions met — resolve and display moon phase
+	# 12. All conditions met — resolve and display moon phase
 	local phase_index
 	phase_index=$(resolve_phase_index "$moon_data")
 
 	if [[ -n "$phase_index" ]]; then
 		local syzygy_label
-		# Pass already-resolved moon times, effective_sunset_epoch, and
-		# effective_sunrise_epoch so the night-visibility gate inside
-		# get_lunar_apsidal_syzygy needs no extra parsing
+		# Pass already-resolved moon times (actual API values), effective_sunset_epoch,
+		# and effective_sunrise_epoch so the night-visibility gate inside
+		# get_lunar_apsidal_syzygy needs no extra parsing.
+		# Note: moonrise_epoch and moonset_epoch are actual API values
+		# (may be 0), used only for apsidal event decision, not announcements.
 		syzygy_label=$(get_lunar_apsidal_syzygy \
 			"$moon_data" \
 			"$moonrise_epoch" \
