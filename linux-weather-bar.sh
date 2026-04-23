@@ -928,25 +928,32 @@ is_moon_too_dim() {
 #######################################
 # Determine whether the moon is visible during nighttime hours.
 #
-# A moon is considered "not visible at night" if EITHER condition is true:
+# Night is defined as the window [effective_sunset → effective_sunrise].
+# The moon is visible at night if its arc overlaps that window:
+#   moonset  > effective_sunset   (still up when night begins)
+#   moonrise < effective_sunrise  (rises before daylight returns)
 #
-#   1. Illumination < 5% — the moon is physically too close to the sun
-#      to be observable (always true for New Moon). This catches Super New
-#      Moon reliably regardless of its rise/set times, since a New Moon
-#      always tracks the sun across the sky.
+# A moon is considered "not visible at night" if ANY condition is true:
 #
-#   2. Moonset before effective_sunset AND moonrise before nightfall
-#      (effective_sunset + 60 min) — the moon is only above the horizon
-#      during daytime/early evening, never during true night.
+#   1. Illumination < 5% — moon is too close to the sun to observe
+#      (reliably catches New Moon regardless of rise/set times).
+#      Short-circuits: condition 2 is never evaluated when this is true.
 #
-# Condition 1 short-circuits: if illumination < 5%, condition 2 is never
-# evaluated.
+#   2. moonset  <= effective_sunset  — moon already gone before night begins
+#      OR
+#      moonrise >= effective_sunrise — moon won't rise until daytime
+#      Either bound violated means no overlap with the night window.
+#
+# Using effective_sunrise (tomorrow's if past today's) rather than raw
+# sunrise correctly handles overnight scenarios where moonrise occurs
+# after midnight but before dawn.
 #
 # Arguments:
-#   $1 - moonrise_epoch         (0 if unknown/not visible)
-#   $2 - moonset_epoch          (0 if unknown/not visible)
-#   $3 - effective_sunset_epoch (yesterday's if overnight, today's otherwise)
-#   $4 - illumination_pct       (numeric, e.g. 2.4 — no % sign)
+#   $1 - moonrise_epoch          (0 if unknown)
+#   $2 - moonset_epoch           (0 if unknown)
+#   $3 - effective_sunset_epoch  (yesterday's if overnight, today's otherwise)
+#   $4 - effective_sunrise_epoch (tomorrow's if past today's sunrise)
+#   $5 - illumination_pct        (numeric, e.g. 2.4 — no % sign)
 # Outputs:
 #   (none)
 # Returns:
@@ -957,25 +964,23 @@ is_moon_visible_at_night() {
 	local moonrise_epoch="$1"
 	local moonset_epoch="$2"
 	local effective_sunset_epoch="$3"
-	local illumination_pct="$4"
+	local effective_sunrise_epoch="$4"
+	local illumination_pct="$5"
 
-	# Condition 1: illumination too low
+	# Condition 1: illumination too low — short-circuit
 	if is_moon_too_dim "$illumination_pct"; then
-		return 1  # not visible at night
+		return 1
 	fi
 
-	# Condition 2: timing check — moon only up during daytime/early evening
-	# If times are unknown, assume visible (don't suppress)
-	(( moonrise_epoch > 0 && moonset_epoch > 0 && effective_sunset_epoch > 0 )) || return 0
+	# Condition 2: moon's arc must overlap the night window [effective_sunset → effective_sunrise]
+	# Unknown times → assume visible (don't suppress)
+	(( moonrise_epoch > 0 && moonset_epoch > 0 && effective_sunset_epoch > 0 && effective_sunrise_epoch > 0 )) || return 0
 
-	local nightfall_epoch
-	nightfall_epoch=$(( effective_sunset_epoch + 3600 ))  # 60 min after sunset = start of night
-
-	if (( moonset_epoch < effective_sunset_epoch && moonrise_epoch < nightfall_epoch )); then
-		return 1  # not visible at night
+	if (( moonset_epoch <= effective_sunset_epoch || moonrise_epoch >= effective_sunrise_epoch )); then
+		return 1  # no overlap with night window
 	fi
 
-	return 0  # visible at night
+	return 0
 }
 
 #######################################
@@ -988,15 +993,16 @@ is_moon_visible_at_night() {
 # When SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS is true, the label is
 # suppressed if the moon is not visible during nighttime hours — either
 # because illumination is below 5% (lost in solar glare) or because
-# moonset falls before sunset AND moonrise before nightfall.
-# This will typically suppress Super New Moon labels since New Moons
-# are near-solar and always have near-zero illumination.
+# the moon's arc does not overlap the night window [effective_sunset →
+# effective_sunrise]. This will typically suppress Super New Moon labels
+# since New Moons are near-solar and always have near-zero illumination.
 #
 # Arguments:
 #   $1 - Moon data JSON string
-#   $2 - moonrise_epoch        (from parse_moon_times; 0 if unknown)
-#   $3 - moonset_epoch         (from parse_moon_times; 0 if unknown)
-#   $4 - effective_sunset_epoch (yesterday's if overnight, today's otherwise)
+#   $2 - moonrise_epoch          (from parse_moon_times; 0 if unknown)
+#   $3 - moonset_epoch           (from parse_moon_times; 0 if unknown)
+#   $4 - effective_sunset_epoch  (yesterday's if overnight, today's otherwise)
+#   $5 - effective_sunrise_epoch (tomorrow's if past today's sunrise)
 # Outputs:
 #   Label string: "Super New Moon", "Supermoon", or "Micromoon"
 #   Empty string if none applies, feature disabled, or visibility suppressed
@@ -1008,6 +1014,7 @@ get_lunar_apsidal_syzygy() {
 	local moonrise_epoch="${2:-0}"
 	local moonset_epoch="${3:-0}"
 	local effective_sunset_epoch="${4:-0}"
+	local effective_sunrise_epoch="${5:-0}"
 
 	[[ "$SHOW_APSIDAL_MOON_EVENTS" == "true" ]] || return 0
 	[[ -n "$moon_data" ]] || return 0
@@ -1027,7 +1034,8 @@ get_lunar_apsidal_syzygy() {
 	if [[ "$SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS" == "true" ]]; then
 		if ! is_moon_visible_at_night \
 				"$moonrise_epoch" "$moonset_epoch" \
-				"$effective_sunset_epoch" "$illumination_pct"; then
+				"$effective_sunset_epoch" "$effective_sunrise_epoch" \
+				"$illumination_pct"; then
 			return 0  # moon not visible at night — suppress label
 		fi
 	fi
@@ -1249,13 +1257,15 @@ resolve_moon_phase() {
 
 	if [[ -n "$phase_index" ]]; then
 		local syzygy_label
-		# Pass already-resolved moon times and effective_sunset_epoch so the
-		# night-visibility gate inside get_lunar_apsidal_syzygy needs no extra parsing
+		# Pass already-resolved moon times, effective_sunset_epoch, and
+		# effective_sunrise_epoch so the night-visibility gate inside
+		# get_lunar_apsidal_syzygy needs no extra parsing
 		syzygy_label=$(get_lunar_apsidal_syzygy \
 			"$moon_data" \
 			"$moonrise_epoch" \
 			"$moonset_epoch" \
-			"$effective_sunset_epoch")
+			"$effective_sunset_epoch" \
+			"$effective_sunrise_epoch")
 		get_moon_phase "$phase_index" "$syzygy_label"
 	fi
 }
