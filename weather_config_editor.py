@@ -2444,7 +2444,22 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         _date_str = str(data.get("date", "")).strip()
         _tz_entry = self._entries.get("TIMEZONE", None)
         _tz_name = _tz_entry.display_value.strip() if _tz_entry else ""
+
+        # ── Current time ─────────────────────────────────────────────
+        tz = self._resolve_tz(_tz_name)
+        now = datetime.now(tz) if tz else datetime.now()
+        now_ts = int(now.timestamp())
+
+        # ── Extract epochs once ──────────────────────────────────────
+        moonrise_ep = int(float(data.get("moonrise", 0) or 0))
+        moonset_ep  = int(float(data.get("moonset", 0) or 0))
+
+        # ── Compute dim flags ────────────────────────────────────────
+        moonrise_dim = (moonrise_ep == 0) or (moonrise_ep > 0 and now_ts > moonrise_ep)
+        moonset_dim  = (moonset_ep == 0) or (moonset_ep > 0 and now_ts > moonset_ep)
+
         fields = list(self._MOON_FIELD_LABELS.items())
+
         for i, (key, label) in enumerate(fields):
             target = left_grid if i % 2 == 0 else right_grid
             row_idx = i // 2
@@ -2453,13 +2468,22 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             lbl.set_halign(Gtk.Align.START)
             lbl.add_css_class("dim-label")
 
+            raw_val = _get_moon_value(key)
+
             val = Gtk.Label(label=self._format_moon_value(
-                key, _get_moon_value(key), _date_str, _tz_name))
+                key, raw_val, _date_str, _tz_name))
             val.set_halign(Gtk.Align.END)
             val.set_hexpand(True)
             val.set_selectable(False)
 
             # Store reference for in-place refresh
+
+            # ── Apply dim logic ONLY to rise/set ───────────────────────
+            if key == "moonrise" and moonrise_dim:
+                val.add_css_class("dim-label")
+            elif key == "moonset" and moonset_dim:
+                val.add_css_class("dim-label")
+
             self._moon_value_labels[key] = val
 
             target.attach(lbl, 0, row_idx, 1, 1)
@@ -2473,9 +2497,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         outer_box.append(vsep)
         outer_box.append(right_grid)
 
-        # ── Optional alert row (separator + label) ────────────────────────────
-        _tz_entry = self._entries.get("TIMEZONE", None)
-        _tz_name = _tz_entry.display_value.strip() if _tz_entry else ""
+        # ── Alert row (unchanged) ────────────────────────────────────
         alert_text = self._compute_moon_alert(data, _tz_name)
 
         alert_sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
