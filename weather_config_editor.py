@@ -488,12 +488,8 @@ class SearchableDropDown:
         Optional fixed width in pixels. If None, calculates from average item length.
     """
 
-    # CSS for fixed-width dropdown with proper ellipsization
-    _CSS_PROVIDER_TEMPLATE = """
-#dropdown-{{id}} {{
-    min-width: {{width}}px;
-}}
-"""
+    # Note: GTK4 doesn't use CSS for width constraints via IDs.
+    # We use set_width_request() directly on the widget instead.
 
     _instance_counter = 0
 
@@ -623,20 +619,13 @@ class SearchableDropDown:
 
     def _apply_width_constraints(self) -> None:
         """
-        Apply CSS height/width constraints to the dropdown widget.
-        Uses min-width to maintain consistent, fixed button size.
+        Apply width constraints to the dropdown widget using GTK4 API.
+        Uses set_size_request() to maintain consistent, fixed button size.
         """
-        css_text = self._CSS_PROVIDER_TEMPLATE.format(
-            id=self._dropdown_id,
-            width=self._fixed_width
-        )
-
-        css_provider = Gtk.CssProvider()
-        css_provider.load_from_data(css_text.encode("utf-8"))
-
-        context = self._widget.get_style_context()
-        context.add_provider(
-            css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        # GTK4 native way: set size request directly on widget
+        # This avoids CSS parsing issues and deprecated API calls
+        # set_size_request(width, height) where -1 means natural size
+        self._widget.set_size_request(self._fixed_width, -1)
 
     # ── GTK4 factory callbacks ────────────────────────────────────────────────
 
@@ -689,6 +678,134 @@ class SearchableDropDown:
         if self._search_entry is not None:
             self._search_entry.remove_css_class("error")
         self._on_selected_cb(text)
+
+
+# ─── Rain Forecast Service ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ForecastEntry:
+    """A single rain forecast slot parsed from OpenWeather forecast-data.json."""
+    dt: int                  # Unix epoch
+    dt_txt: str              # "YYYY-MM-DD HH:MM:SS" (for display)
+    temp: float              # °C
+    feels_like: float        # °C
+    description: str         # e.g. "light rain"
+    pop: float               # 0.0–1.0 probability of precipitation
+
+
+class RainForecastService:
+    """
+    Parses, caches, and filters rain forecast data from
+    ~/.cache/weather/forecast-data.json.
+
+    Responsibilities (Single Responsibility):
+      • File reading & JSON parsing
+      • Cache invalidation (by file mtime)
+      • Filtering by pop threshold and lookahead count
+
+    The service is stateless between calls except for the parsed cache,
+    making it independently testable without any GTK dependency.
+    """
+
+    def __init__(self) -> None:
+        self._forecast_path = Path.home() / ".cache" / "weather" / "forecast-data.json"
+        self._cached_entries: list[ForecastEntry] = []
+        self._cached_mtime: Optional[float] = None
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def get_rain_forecasts(
+        self,
+        threshold: float,
+        lookahead: int,
+    ) -> list[ForecastEntry]:
+        """
+        Return up to *lookahead* upcoming rain entries with pop >= threshold,
+        sorted by earliest occurrence first.
+
+        Re-reads the file only when mtime has changed since the last call.
+        Re-filters always (threshold may change between calls without a file
+        change).
+        """
+        self._refresh_cache_if_stale()
+        return self._filter(self._cached_entries, threshold, lookahead)
+
+    def load_error(self) -> Optional[str]:
+        """Return a human-readable error string if the file is unreadable."""
+        try:
+            self._forecast_path.stat()
+            json.loads(self._forecast_path.read_text(encoding="utf-8"))
+            return None
+        except FileNotFoundError:
+            return "forecast-data.json not found"
+        except (json.JSONDecodeError, ValueError) as exc:
+            return f"forecast-data.json is invalid: {exc}"
+        except Exception as exc:
+            return str(exc)
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _refresh_cache_if_stale(self) -> None:
+        """Reload and re-parse file only when mtime changed."""
+        try:
+            mtime = self._forecast_path.stat().st_mtime
+        except Exception:
+            self._cached_entries = []
+            self._cached_mtime = None
+            return
+
+        if mtime == self._cached_mtime:
+            return  # Cache still valid
+
+        try:
+            raw = json.loads(self._forecast_path.read_text(encoding="utf-8"))
+            self._cached_entries = self._parse(raw)
+            self._cached_mtime = mtime
+        except Exception:
+            self._cached_entries = []
+            self._cached_mtime = None
+
+    @staticmethod
+    def _parse(raw: dict[str, Any]) -> list[ForecastEntry]:
+        """Convert raw OpenWeather forecast JSON into a list of ForecastEntry."""
+        entries: list[ForecastEntry] = []
+        for item in raw.get("list", []):
+            try:
+                main = item["main"]
+                weather = item["weather"][0]
+                entry = ForecastEntry(
+                    dt=int(item["dt"]),
+                    dt_txt=str(item.get("dt_txt", "")),
+                    temp=float(main["temp"]),
+                    feels_like=float(main["feels_like"]),
+                    description=str(weather.get("description", "")).title(),
+                    pop=float(item.get("pop", 0.0)),
+                )
+                entries.append(entry)
+            except (KeyError, ValueError, TypeError):
+                continue  # Skip malformed slots silently
+        return entries
+
+    @staticmethod
+    def _filter(
+        entries: list[ForecastEntry],
+        threshold: float,
+        lookahead: int,
+    ) -> list[ForecastEntry]:
+        """
+        Filter entries with pop >= threshold, keep only future timestamps,
+        sort earliest-first, and return at most *lookahead* results.
+
+        This is the single authoritative filter — never duplicated in the UI.
+        """
+        now_ts = int(datetime.now().timestamp())
+        result = [
+            e for e in entries
+            if e.pop >= threshold and e.dt >= now_ts
+        ]
+        result.sort(key=lambda e: e.dt)
+        return result[:max(0, lookahead)]
 
 
 # ─── Config File I/O ─────────────────────────────────────────────────────────
@@ -1591,6 +1708,18 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._moon_alert_row: Optional[Gtk.Box] = None
         self._moon_alert_label: Optional[Gtk.Label] = None
 
+        # ── Rain Forecast section ──────────────────────────────────────────
+        self._rain_forecast_service = RainForecastService()
+        self._rain_forecast_group: Optional[Adw.PreferencesGroup] = None
+        # Local UI threshold — initialised from RAIN_FORECAST_THRESHOLD on
+        # first build; independent of global config thereafter.
+        self._rain_forecast_threshold_ui: float = 0.7
+        # Local UI lookahead count — initialised from RAIN_FORECAST_WINDOW on
+        # first build; independent of global config thereafter.
+        self._rain_forecast_lookahead_ui: int = 3
+        # Store forecast content container to update without destroying spinbuttons
+        self._rain_forecast_content_row: Optional[Gtk.Widget] = None
+
         self._build_ui()
 
         # Start monitoring when window is realized
@@ -1829,7 +1958,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         # Cross-date check: compare calendar date of epoch vs. reference date
         try:
-            ref_day, ref_month, ref_year = (int(p) for p in date_str.split("/"))
+            ref_day, ref_month, ref_year = (int(p)
+                                            for p in date_str.split("/"))
             from datetime import date as _date
             ref_date = _date(ref_year, ref_month, ref_day)
             if dt.date() != ref_date:
@@ -2032,11 +2162,12 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         if not not_visible:
             try:
                 moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
-                moonset_ep  = int(float(moonset_str))  if moonset_str  else 0
+                moonset_ep = int(float(moonset_str)) if moonset_str else 0
 
                 if moonrise_ep > 0 and moonset_ep > 0:
                     sun_data = WeatherConfigWindow._load_sun_data()
-                    sunset_ep, sunrise_ep = WeatherConfigWindow._get_sun_epochs(sun_data)
+                    sunset_ep, sunrise_ep = WeatherConfigWindow._get_sun_epochs(
+                        sun_data)
 
                     if sunset_ep is not None and sunrise_ep is not None:
                         if moonrise_ep >= sunrise_ep and moonset_ep <= sunset_ep:
@@ -2156,11 +2287,12 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         if not not_visible:
             try:
                 moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
-                moonset_ep  = int(float(moonset_str))  if moonset_str  else 0
+                moonset_ep = int(float(moonset_str)) if moonset_str else 0
 
                 if moonrise_ep > 0 and moonset_ep > 0:
                     sun_data = WeatherConfigWindow._load_sun_data()
-                    sunset_ep, sunrise_ep = WeatherConfigWindow._get_sun_epochs(sun_data)
+                    sunset_ep, sunrise_ep = WeatherConfigWindow._get_sun_epochs(
+                        sun_data)
 
                     if sunset_ep is not None and sunrise_ep is not None:
                         if moonrise_ep >= sunrise_ep and moonset_ep <= sunset_ep:
@@ -2343,7 +2475,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         _tz_entry = self._entries.get("TIMEZONE", None)
         _tz_name = _tz_entry.display_value.strip() if _tz_entry else ""
         for key, val_label in self._moon_value_labels.items():
-            val_label.set_label(self._format_moon_value(key, _get(key), _date_str, _tz_name))
+            val_label.set_label(self._format_moon_value(
+                key, _get(key), _date_str, _tz_name))
 
         # Refresh the optional alert row
         if hasattr(self, "_moon_alert_row") and self._moon_alert_row is not None:
@@ -2452,11 +2585,13 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         # ── Extract epochs once ──────────────────────────────────────
         moonrise_ep = int(float(data.get("moonrise", 0) or 0))
-        moonset_ep  = int(float(data.get("moonset", 0) or 0))
+        moonset_ep = int(float(data.get("moonset", 0) or 0))
 
         # ── Compute dim flags ────────────────────────────────────────
-        moonrise_dim = (moonrise_ep == 0) or (moonrise_ep > 0 and now_ts > moonrise_ep)
-        moonset_dim  = (moonset_ep == 0) or (moonset_ep > 0 and now_ts > moonset_ep)
+        moonrise_dim = (moonrise_ep == 0) or (
+            moonrise_ep > 0 and now_ts > moonrise_ep)
+        moonset_dim = (moonset_ep == 0) or (
+            moonset_ep > 0 and now_ts > moonset_ep)
 
         fields = list(self._MOON_FIELD_LABELS.items())
 
@@ -2636,7 +2771,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             update_btn = Gtk.Button(label="Update")
             update_btn.add_css_class("flat")
             update_btn.set_valign(Gtk.Align.CENTER)
-            update_btn.set_tooltip_text("Run weather script to fetch weather-data.json")
+            update_btn.set_tooltip_text(
+                "Run weather script to fetch weather-data.json")
             update_btn.connect("clicked", self._on_weather_update_clicked)
             group.set_header_suffix(update_btn)
 
@@ -2721,6 +2857,308 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         group.add(main_row)
         return group
 
+    # ── Rain Forecast helpers ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _format_forecast_dt(dt_txt: str, tz_name: str) -> str:
+        try:
+            dt = datetime.strptime(dt_txt.strip(), "%Y-%m-%d %H:%M:%S")
+            tz = WeatherConfigWindow._resolve_tz(tz_name)
+
+            if tz:
+                dt = dt.replace(tzinfo=timezone.utc).astimezone(tz)
+                now = datetime.now(tz)
+            else:
+                now = datetime.now()
+
+            dt_date = dt.date()
+            today = now.date()
+            tomorrow = today + timedelta(days=1)
+
+            # Precompute time with forced uppercase AM/PM
+            time_str = dt.strftime("%I:%M %p").upper()
+
+            if dt_date == today:
+                return f"Today, {time_str}"
+            elif dt_date == tomorrow:
+                return f"Tomorrow, {time_str}"
+
+            return f"{dt.strftime('%A, %d %B %Y')} {time_str}"
+
+        except Exception:
+            return dt_txt
+
+    def _rebuild_rain_forecast_section(self) -> None:
+        """Update only the forecast content without destroying the header spinbuttons."""
+        if self._rain_forecast_group is None or self._rain_forecast_content_row is None:
+            return
+
+        # Build new content (forecasts or empty message)
+        new_content = self._build_rain_forecast_content()
+
+        # Replace the content row in-place
+        self._rain_forecast_group.remove(self._rain_forecast_content_row)
+        self._rain_forecast_group.add(new_content)
+        self._rain_forecast_content_row = new_content
+
+    def _build_rain_forecast_content(self) -> Gtk.Widget:
+        """
+        Build only the forecast content (forecasts list or empty message).
+        Does NOT build the header - header is stable and not rebuilt.
+        """
+        # ── Fetch filtered forecasts ──────────────────────────────────────
+        forecasts = self._rain_forecast_service.get_rain_forecasts(
+            threshold=self._rain_forecast_threshold_ui,
+            lookahead=self._rain_forecast_lookahead_ui,
+        )
+
+        tz_name = ""
+        if self._entries:
+            tz_entry = self._entries.get("TIMEZONE")
+            if tz_entry:
+                tz_name = tz_entry.display_value.strip()
+
+        feels_threshold = 10.0
+        if self._entries:
+            ft_entry = self._entries.get("FEELS_LIKE_THRESHOLD")
+            if ft_entry:
+                try:
+                    feels_threshold = float(ft_entry.display_value)
+                except ValueError:
+                    pass
+
+        # ── Empty state ───────────────────────────────────────────────────
+        if not forecasts:
+            empty_row = Adw.ActionRow()
+            empty_row.set_activatable(False)
+            empty_row.set_title("No upcoming rain detected.")
+            empty_row.set_subtitle(
+                "Try increasing the Show count (max upcoming forecasts) "
+                "or lowering the Min Precip threshold above."
+            )
+            return empty_row
+
+        # ── One ActionRow containing a vertical stack of forecast blocks ──
+        container_row = Adw.ActionRow()
+        container_row.set_activatable(False)
+
+        stack_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        stack_box.set_hexpand(True)
+        stack_box.set_margin_start(4)
+        stack_box.set_margin_end(4)
+        stack_box.set_margin_top(4)
+        stack_box.set_margin_bottom(4)
+
+        for idx, entry in enumerate(forecasts):
+            # Vertical spacing separator between entries (not before first)
+            if idx > 0:
+                sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+                sep.set_margin_top(8)
+                sep.set_margin_bottom(8)
+                sep.set_margin_start(16)
+                sep.set_margin_end(16)
+                stack_box.append(sep)
+
+            # ── Entry block ───────────────────────────────────────────────
+            entry_box = Gtk.Box(
+                orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            entry_box.set_margin_start(16)
+            entry_box.set_margin_end(16)
+            entry_box.set_margin_top(10)
+            entry_box.set_margin_bottom(10)
+
+            # Line 1: bold date + time
+            date_label = Gtk.Label()
+            date_label.set_markup(
+                f"{self._format_forecast_dt(entry.dt_txt, tz_name)}"
+            )
+            date_label.set_halign(Gtk.Align.START)
+            date_label.set_xalign(0.0)
+
+            # Line 2: description + temp (+ feels like if delta exceeds threshold)
+            temp_rounded = round(entry.temp, 1)
+            feels_rounded = round(entry.feels_like, 1)
+            pop_pct = round(entry.pop * 100)
+
+            delta = abs(entry.feels_like - entry.temp)
+            if delta > feels_threshold:
+                detail_text = (
+                    f"{entry.description}  {temp_rounded}°C "
+                    f"(Feels {feels_rounded}°C)  "
+                    f"Precipitation: {pop_pct}%"
+                )
+            else:
+                detail_text = (
+                    f"{entry.description}  {temp_rounded}°C  "
+                    f"Precipitation: {pop_pct}%"
+                )
+
+            detail_label = Gtk.Label(label=detail_text)
+            detail_label.set_halign(Gtk.Align.START)
+            detail_label.set_xalign(0.0)
+            detail_label.add_css_class("dim-label")
+            detail_label.set_wrap(True)
+
+            entry_box.append(date_label)
+            entry_box.append(detail_label)
+            stack_box.append(entry_box)
+
+        container_row.set_child(stack_box)
+        return container_row
+
+    def _on_rain_forecast_update_clicked(self, btn: Gtk.Button) -> None:
+        """Run the weather script to refresh forecast-data.json, then rebuild the section."""
+        script = os.path.expandvars(self.WEATHER_SCRIPT)
+
+        btn.set_sensitive(False)
+        btn.set_label("Updating…")
+
+        def _worker() -> None:
+            try:
+                subprocess.run(["bash", "-c", script], check=True, timeout=30)
+                GLib.idle_add(_on_success)
+            except Exception as exc:
+                GLib.idle_add(_on_error, str(exc))
+
+        def _on_success() -> bool:
+            btn.set_label("Update")
+            btn.set_sensitive(True)
+            # Invalidate service cache so rebuilt section reads fresh data
+            self._rain_forecast_service._cached_mtime = None
+            self._rebuild_rain_forecast_section()
+            self._show_toast("Forecast data updated successfully")
+            return False
+
+        def _on_error(msg: str) -> bool:
+            btn.set_label("Update")
+            btn.set_sensitive(True)
+            self._show_error(f"Weather script failed:\n{msg}")
+            return False
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _build_rain_forecast_section(self) -> Adw.PreferencesGroup:
+        """
+        Build the Rain Forecast PreferencesGroup.
+
+        Layout mirrors the Moon Data section:
+        - Single PreferencesGroup titled "Rain Forecast"
+        - Each forecast entry is a vertically stacked block (NOT a grid,
+          NOT multi-column) inside a single list container.
+        - A local SpinButton threshold control and lookahead count control
+          in the header trigger live re-filtering.
+        - An Update button runs the weather script and refreshes data.
+
+        SOLID compliance:
+        - Parsing/filtering is delegated to RainForecastService (SRP).
+        - Threshold and lookahead are passed in; core logic is not modified (OCP).
+        - Service is a dependency-injected instance attribute (DI).
+        """
+        group = Adw.PreferencesGroup()
+        group.set_title("Rain Forecast")
+        group.set_margin_top(4)
+
+        # ── Initialise threshold from global config on first build ─────────
+        if self._entries:
+            global_entry = self._entries.get("RAIN_FORECAST_THRESHOLD")
+            if global_entry:
+                try:
+                    self._rain_forecast_threshold_ui = float(
+                        global_entry.display_value)
+                except ValueError:
+                    pass
+
+        # ── Initialise lookahead from global config on first build ─────────
+        if self._entries:
+            window_entry = self._entries.get("RAIN_FORECAST_WINDOW")
+            if window_entry:
+                try:
+                    value = int(window_entry.display_value)
+                    # Default minimum is 3 for better UI
+                    self._rain_forecast_lookahead_ui = max(3, value)
+                except ValueError:
+                    pass
+
+        # ── Header: Update button + lookahead spinner + threshold spinner ──
+        header_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        header_box.set_valign(Gtk.Align.CENTER)
+
+        # Update button
+        update_btn = Gtk.Button(label="Update")
+        update_btn.add_css_class("flat")
+        update_btn.set_valign(Gtk.Align.CENTER)
+        update_btn.set_tooltip_text(
+            "Run weather script to refresh forecast data")
+        update_btn.connect("clicked", self._on_rain_forecast_update_clicked)
+        update_btn.set_size_request(125, -1)
+
+        # Lookahead spinner
+        lookahead_label = Gtk.Label(label="Max Items:")
+        lookahead_label.add_css_class("caption")
+        lookahead_label.add_css_class("dim-label")
+        lookahead_label.set_valign(Gtk.Align.CENTER)
+
+        lookahead_adj = Gtk.Adjustment(
+            value=float(self._rain_forecast_lookahead_ui),
+            lower=1.0, upper=20.0,
+            step_increment=1.0, page_increment=5.0,
+        )
+        lookahead_spin = Gtk.SpinButton(adjustment=lookahead_adj, digits=0)
+        lookahead_spin.set_valign(Gtk.Align.CENTER)
+        lookahead_spin.set_tooltip_text(
+            "Maximum number of upcoming rain forecasts to display.\n"
+            "This is independent of the global Rain Forecast Lookahead Window."
+        )
+
+        def _on_lookahead_changed(spin: Gtk.SpinButton) -> None:
+            self._rain_forecast_lookahead_ui = int(spin.get_value())
+            # Update content only - header spinbuttons remain stable
+            self._rebuild_rain_forecast_section()
+
+        lookahead_spin.connect("value-changed", _on_lookahead_changed)
+
+        # Threshold spinner
+        threshold_label = Gtk.Label(label="Min Precip:")
+        threshold_label.add_css_class("caption")
+        threshold_label.add_css_class("dim-label")
+        threshold_label.set_valign(Gtk.Align.CENTER)
+
+        threshold_adj = Gtk.Adjustment(
+            value=self._rain_forecast_threshold_ui,
+            lower=0.0, upper=1.0,
+            step_increment=0.05, page_increment=0.1,
+        )
+        threshold_spin = Gtk.SpinButton(adjustment=threshold_adj, digits=2)
+        threshold_spin.set_valign(Gtk.Align.CENTER)
+        threshold_spin.set_tooltip_text(
+            "Minimum probability of precipitation (0.0–1.0) to show a forecast entry.\n"
+            "This is independent of the global Rain Probability Threshold."
+        )
+
+        def _on_threshold_changed(spin: Gtk.SpinButton) -> None:
+            self._rain_forecast_threshold_ui = spin.get_value()
+            # Update content only - header spinbuttons remain stable
+            self._rebuild_rain_forecast_section()
+
+        threshold_spin.connect("value-changed", _on_threshold_changed)
+
+        
+        header_box.append(lookahead_label)
+        header_box.append(lookahead_spin)
+        header_box.append(threshold_label)
+        header_box.append(threshold_spin)
+        header_box.append(update_btn)
+        group.set_header_suffix(header_box)
+
+        # ── Build initial content and store reference ──────────────────────
+        content_row = self._build_rain_forecast_content()
+        self._rain_forecast_content_row = content_row
+        group.add(content_row)
+
+        self._rain_forecast_group = group
+        return group
+
     def _build_preferences(self) -> None:
         """Rebuild preference groups from loaded entries."""
 
@@ -2769,8 +3207,13 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 self._groups_box.append(group)
                 self._group_widgets[group_name] = (group, rows)
 
-            # Inject Sun Data section immediately after Configuration group,
+            # Inject Rain Forecast + Sun Data immediately after Configuration
             if group_name == "Configuration":
+                # 1. Rain Forecast comes first
+                self._rain_forecast_group = self._build_rain_forecast_section()
+                self._groups_box.append(self._rain_forecast_group)
+
+                # 2. Then Sun Data
                 self._sun_data_group = self._build_sun_data_section()
                 self._groups_box.append(self._sun_data_group)
 
@@ -2850,7 +3293,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         _tz_entry = self._entries.get("TIMEZONE", None)
         _tz_name = _tz_entry.display_value.strip() if _tz_entry else ""
         for key, val_label in self._moon_value_labels.items():
-            val_label.set_label(self._format_moon_value(key, _get(key), _date_str, _tz_name))
+            val_label.set_label(self._format_moon_value(
+                key, _get(key), _date_str, _tz_name))
 
         # Update alert row with both lunar window progress + static alerts
         if self._moon_alert_row is not None and self._moon_alert_label is not None:
