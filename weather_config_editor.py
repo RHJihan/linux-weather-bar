@@ -1686,7 +1686,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app)
         self.set_title("Weather Config Editor")
-        self.set_default_size(720, 820)
+        self.set_default_size(740, 900)
+        self.set_size_request(740, 900)
 
         self._parser = ConfigParser()
         self._validator = Validator()
