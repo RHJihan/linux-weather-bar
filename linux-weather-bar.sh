@@ -464,6 +464,17 @@ format_rain_warning() {
     	rain_time="soon"   # graceful degradation
 	fi
 
+    # Get dates
+    local today_date rain_date rain_date_fmt=""
+    today_date=$(date +"%Y-%m-%d")
+    rain_date=$(date -d "@${rain_epoch}" +"%Y-%m-%d" 2>/dev/null || date -r "$rain_epoch" +"%Y-%m-%d")
+
+    # If different day
+    if [[ "$rain_date" != "$today_date" ]]; then
+        rain_date_fmt=$(date -d "@${rain_epoch}" +"%-d %B" 2>/dev/null || date -r "$rain_epoch" +"%-d %B")
+    fi
+
+    # Description normalization
 	local rain_desc
 	if [[ "$description" =~ [Rr]ain|[Dd]rizzle|[Tt]hunderstorm ]]; then
 		rain_desc=$(capitalize_words "$description")
@@ -471,7 +482,13 @@ format_rain_warning() {
 		rain_desc="Rain likely"
 		icon="🌧️"
 	fi
-	echo "${icon}   ${rain_desc} ≈ ${rain_time^^} (${probability}%)"
+
+    # Build output
+    if [[ -n "$rain_date_fmt" ]]; then
+        echo "${icon}   ${rain_desc} ≈ ${rain_date_fmt} ${rain_time^^} (${probability}%)"
+    else
+        echo "${icon}   ${rain_desc} ≈ ${rain_time^^} (${probability}%)"
+    fi
 }
 
 #######################################
