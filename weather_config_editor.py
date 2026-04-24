@@ -2518,6 +2518,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         update_btn.set_tooltip_text(
             "Fetch latest moon data from the API and save to moon-data.json")
         update_btn.connect("clicked", self._on_moon_update_clicked)
+        update_btn.set_size_request(125, -1)
         group.set_header_suffix(update_btn)
 
         moon_path = Path.home() / ".cache" / "weather" / "moon-data.json"
@@ -2775,6 +2776,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             update_btn.set_tooltip_text(
                 "Run weather script to fetch weather-data.json")
             update_btn.connect("clicked", self._on_weather_update_clicked)
+            update_btn.set_size_request(125, -1)
             group.set_header_suffix(update_btn)
 
             placeholder = Adw.ActionRow()
