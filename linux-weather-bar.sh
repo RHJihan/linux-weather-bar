@@ -1074,24 +1074,50 @@ get_lunar_apsidal_syzygy() {
 
 #######################################
 # Resolve window start epoch from MOON_PHASE_WINDOW_START parameter.
-# Supports: numeric (minutes after anchor) or "moonrise" (use moonrise directly)
+#
+# IMPORTANT: $3 must be lunar_window_start from get_effective_lunar_window,
+# NOT the raw moonrise_epoch from the API.  By the time this function is called,
+# infer_lunar_window_bounds has already resolved any missing moonrise into a
+# best-estimate start (moonset - 12h 25m).  Passing that inferred value here
+# keeps inference logic in one place (DRY) and guarantees a valid anchor in
+# every case without a second, inconsistent fallback path.
+#
+# When param is "moonrise":
+#   Use lunar_window_start directly (actual or inferred moonrise).
+#   Independent of SHOW_MOONPHASE_DURING_DAYTIME.
+#
+# When param is an integer (minutes):
+#   The anchor depends on SHOW_MOONPHASE_DURING_DAYTIME:
+#     true  → delay measured from lunar_window_start (moonrise or its inference)
+#     false → delay measured from sunset_epoch
 #
 # Arguments:
-#   $1 - MOON_PHASE_WINDOW_START value (number or "moonrise")
-#   $2 - anchor epoch (sunset or moonrise if after sunset)
-#   $3 - moonrise_epoch (0 if unavailable)
+#   $1 - MOON_PHASE_WINDOW_START value ("moonrise" or a non-negative integer)
+#   $2 - sunset_epoch        (effective sunset; used when daytime display is off)
+#   $3 - lunar_window_start  (from get_effective_lunar_window — real or inferred moonrise)
+#   $4 - show_during_daytime ("true"/"false") — controls integer anchor selection
 # Outputs:
-#   Window start epoch
+#   Window start epoch (integer)
+# Returns:
+#   0 always
 #######################################
 resolve_window_start() {
-	local param="$1" anchor="$2" moonrise="$3"
+	local param="$1"
+	local sunset_epoch="$2"
+	local lunar_window_start="$3"
+	local show_during_daytime="$4"
+
 	if [[ "$param" == "moonrise" ]]; then
-		if (( moonrise > 0 )); then
-			echo "$moonrise"
-		else
-			echo "$anchor"   # moonrise not visible — fall back to sunset
-		fi
+		# Keyword mode: always anchor to (inferred) moonrise
+		echo "$lunar_window_start"
 	else
+		# Numeric mode: choose anchor based on daytime display preference
+		local anchor
+		if [[ "$show_during_daytime" == "true" ]]; then
+			anchor="$lunar_window_start"
+		else
+			anchor="$sunset_epoch"
+		fi
 		echo $(( anchor + ${param:-1} * 60 ))
 	fi
 }
@@ -1322,12 +1348,16 @@ resolve_moon_phase() {
 	fi
 
 	# 8. Resolve display window (user-configured start/end)
-	# Anchor is the later of effective_sunset or lunar_window_start (intersection start)
-	local window_anchor
-	window_anchor=$(( effective_sunset_epoch > lunar_window_start ? effective_sunset_epoch : lunar_window_start ))
-
+	# lunar_window_start is passed as the moonrise anchor so that resolve_window_start
+	# always receives a valid epoch — real moonrise when available, or the value
+	# already inferred by infer_lunar_window_bounds (moonset - 12h 25m) when not.
+	# This keeps all inference logic in one place (DRY).
 	local window_start window_end
-	window_start=$(resolve_window_start "$MOON_PHASE_WINDOW_START" "$window_anchor" "$moonrise_epoch")
+	window_start=$(resolve_window_start \
+		"$MOON_PHASE_WINDOW_START" \
+		"$effective_sunset_epoch" \
+		"$lunar_window_start" \
+		"$SHOW_MOONPHASE_DURING_DAYTIME")
 	window_end=$(resolve_window_end "$MOON_PHASE_WINDOW_DURATION" "$window_start" "$lunar_window_end" "$effective_sunrise_epoch")
 
 	# 9. Check if current time is within display window
