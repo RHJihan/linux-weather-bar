@@ -224,12 +224,12 @@ SCHEMA: list[VarSchema] = [
               group="Moon Phase"),
 
     VarSchema("MOON_PHASE_WINDOW_START",           "Display Window Start",         VarType.NUMERIC_OR_SENTINEL,
-              "Minutes after sunset/moonrise (Daytime on) or from moonrise",
+              "Minutes after sunset/moonrise, or immediately after moonrise",
               sentinel_label="Moonrise", sentinel_value="moonrise",
               readonly=True, group="Moon Phase"),
 
     VarSchema("MOON_PHASE_WINDOW_DURATION",        "Display Window End",           VarType.NUMERIC_OR_SENTINEL,
-              "How long to show it, or until moonset",
+              "Window duration in minutes, or until moonset",
               sentinel_label="Moonset", sentinel_value="moonset",
               readonly=True, group="Moon Phase"),
 
