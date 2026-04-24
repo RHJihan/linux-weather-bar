@@ -3047,6 +3047,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             date_label.set_markup(
                 f"{self._format_forecast_dt(entry.dt_txt, tz_name)}"
             )
+            date_label.add_css_class("dim-label")
             date_label.set_halign(Gtk.Align.START)
             date_label.set_xalign(0.0)
 
@@ -3071,7 +3072,6 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             detail_label = Gtk.Label(label=detail_text)
             detail_label.set_halign(Gtk.Align.START)
             detail_label.set_xalign(0.0)
-            detail_label.add_css_class("dim-label")
             detail_label.set_wrap(True)
 
             entry_box.append(date_label)
