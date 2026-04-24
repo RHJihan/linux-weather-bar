@@ -2936,8 +2936,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             empty_row.set_activatable(False)
             empty_row.set_title("No upcoming rain detected.")
             empty_row.set_subtitle(
-                "Try increasing the Show count (max upcoming forecasts) "
-                "or lowering the Min Precip threshold above."
+                "Try lowering the Min Precip threshold."
             )
             return empty_row
 
