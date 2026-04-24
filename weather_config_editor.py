@@ -910,34 +910,40 @@ class Validator:
         return ""
 
 
-# ─── Moon Data Live Monitor ───────────────────────────────────────────────────
+# ─── Generic File Data Monitor Base Class ────────────────────────────────────
 
 
-class MoonDataMonitor:
+class FileDataMonitor:
     """
-    Watches ~/.cache/weather/moon-data.json for changes and computes live
-    values (like lunar window progress) that update every second.
+    Abstract base for monitoring JSON data files.
 
-    Responsibilities:
+    Responsibilities (SRP):
       • File watching: Detects file changes via Gio.FileMonitor
       • Time-based updates: Recomputes time-sensitive values via GLib.timeout
       • Callback dispatch: Notifies subscribers when data or time changes
+
+    Subclasses must define:
+      • get_file_path(): Returns Path to monitor
+      • _load_data(): Loads and parses file, returns {} on error
 
     Error handling: Silently tolerates missing files or invalid JSON.
     """
 
     def __init__(self) -> None:
-        self._moon_path = Path.home() / ".cache" / "weather" / "moon-data.json"
         self._file_monitor: Optional[Gio.FileMonitor] = None
         self._monitor_signal_id: Optional[int] = None
         self._timeout_id: Optional[int] = None
         self._data: dict[str, Any] = {}
         self._callbacks: list[Callable[[dict[str, Any]], None]] = []
 
+    def get_file_path(self) -> Path:
+        """Return the path to the monitored file. MUST be overridden by subclass."""
+        raise NotImplementedError
+
     def _load_data(self) -> dict[str, Any]:
-        """Load moon-data.json. Returns {} if file missing or invalid JSON."""
+        """Load and parse the file. Return {} on error. Can be overridden by subclass."""
         try:
-            return json.loads(self._moon_path.read_text(encoding="utf-8"))
+            return json.loads(self.get_file_path().read_text(encoding="utf-8"))
         except Exception:
             return {}
 
@@ -955,7 +961,8 @@ class MoonDataMonitor:
         self._dispatch_callbacks()
 
         # Set up file monitor
-        gfile = Gio.File.new_for_path(str(self._moon_path.parent))
+        file_path = self.get_file_path()
+        gfile = Gio.File.new_for_path(str(file_path.parent))
         try:
             self._file_monitor = gfile.monitor_directory(
                 Gio.FileMonitorFlags.NONE, None)
@@ -994,7 +1001,7 @@ class MoonDataMonitor:
             return
 
         # Check if this is our target file
-        if file.get_path() != str(self._moon_path):
+        if file.get_path() != str(self.get_file_path()):
             return
 
         # Reload data and dispatch
@@ -1003,8 +1010,7 @@ class MoonDataMonitor:
 
     def _on_timeout(self) -> bool:
         """Called every 1 second; recompute time-sensitive values."""
-        # Even if file content hasn't changed, time-based values
-        # (like lunar window progress %) need recomputation.
+        # Even if file content hasn't changed, time-based values need recomputation.
         self._dispatch_callbacks()
         return True  # Keep firing
 
@@ -1019,6 +1025,40 @@ class MoonDataMonitor:
     def get_data(self) -> dict[str, Any]:
         """Return currently cached data dict."""
         return self._data.copy()
+
+
+# ─── Moon Data Live Monitor (extends generic FileDataMonitor) ────────────────
+
+
+class MoonDataMonitor(FileDataMonitor):
+    """
+    Watches ~/.cache/weather/moon-data.json for changes and computes live
+    values (like lunar window progress) that update every second.
+
+    Extends FileDataMonitor for file watching and callback dispatch,
+    delegating all monitor logic to the parent class (DRY principle).
+    """
+
+    def get_file_path(self) -> Path:
+        """Return path to moon-data.json."""
+        return Path.home() / ".cache" / "weather" / "moon-data.json"
+
+
+# ─── Rain Forecast Live Monitor (extends generic FileDataMonitor) ────────────
+
+
+class RainForecastMonitor(FileDataMonitor):
+    """
+    Watches ~/.cache/weather/forecast-data.json for changes and triggers
+    callbacks to update the rain forecast UI in real-time.
+
+    Extends FileDataMonitor for file watching and callback dispatch,
+    delegating all monitor logic to the parent class (DRY principle).
+    """
+
+    def get_file_path(self) -> Path:
+        """Return path to forecast-data.json."""
+        return Path.home() / ".cache" / "weather" / "forecast-data.json"
 
 
 # ─── Row Widgets ─────────────────────────────────────────────────────────────
@@ -1720,6 +1760,11 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._rain_forecast_lookahead_ui: int = 3
         # Store forecast content container to update without destroying spinbuttons
         self._rain_forecast_content_row: Optional[Gtk.Widget] = None
+
+        # ── Live rain forecast monitoring ──────────────────────────────────
+        self._rain_forecast_monitor = RainForecastMonitor()
+        self._rain_forecast_monitor.add_callback(
+            self._on_rain_forecast_updated)
 
         self._build_ui()
 
@@ -3009,7 +3054,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         return container_row
 
     def _on_rain_forecast_update_clicked(self, btn: Gtk.Button) -> None:
-        """Run the weather script to refresh forecast-data.json, then rebuild the section."""
+        """
+        Run the weather script to refresh forecast-data.json.
+        The file monitor will detect the change and automatically update the UI.
+        """
         script = os.path.expandvars(self.WEATHER_SCRIPT)
 
         btn.set_sensitive(False)
@@ -3025,9 +3073,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         def _on_success() -> bool:
             btn.set_label("Update")
             btn.set_sensitive(True)
-            # Invalidate service cache so rebuilt section reads fresh data
-            self._rain_forecast_service._cached_mtime = None
-            self._rebuild_rain_forecast_section()
+            # File monitor will detect the file change and trigger _on_rain_forecast_updated
+            # which will update the UI automatically. No manual cache invalidation needed.
             self._show_toast("Forecast data updated successfully")
             return False
 
@@ -3145,7 +3192,6 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         threshold_spin.connect("value-changed", _on_threshold_changed)
 
-        
         header_box.append(lookahead_label)
         header_box.append(lookahead_spin)
         header_box.append(threshold_label)
@@ -3237,15 +3283,17 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 if row:
                     row.set_sensitive(is_enabled)
 
-    # ── Window Lifecycle & Moon Data Updates ──────────────────────────────────
+    # ── Window Lifecycle & Data Updates ────────────────────────────────────
 
     def _on_window_realized(self, *_: Any) -> None:
-        """Start moon data monitoring when window is first shown."""
+        """Start data monitoring (moon and rain forecast) when window is first shown."""
         self._moon_monitor.start_watching()
+        self._rain_forecast_monitor.start_watching()
 
     def _on_window_closed(self, *_: Any) -> bool:
         """Clean up monitoring when window closes."""
         self._moon_monitor.stop_watching()
+        self._rain_forecast_monitor.stop_watching()
         return False
 
     def _on_moon_data_updated(self, data: dict[str, Any]) -> None:
@@ -3324,6 +3372,21 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         if self._moon_data_group:
             self._moon_data_group.set_description(
                 self._moon_retrieved_description(data))
+
+    def _on_rain_forecast_updated(self, data: dict[str, Any]) -> None:
+        """
+        Callback fired when rain forecast data changes (file reload) OR every second (timeout).
+        Updates the rain forecast content in-place without rebuilding.
+
+        Unlike moon data, this doesn't need to handle unavailable states since
+        the rain forecast service gracefully handles missing files. Just rebuild
+        the content rows to reflect the current forecast data.
+        """
+        if not self._rain_forecast_group or not self._rain_forecast_content_row:
+            return
+
+        # Rebuild only the forecast content (keeping spinbuttons stable)
+        self._rebuild_rain_forecast_section()
 
     # ── File Operations ───────────────────────────────────────────────────────
 
