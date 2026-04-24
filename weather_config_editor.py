@@ -1054,11 +1054,39 @@ class RainForecastMonitor(FileDataMonitor):
 
     Extends FileDataMonitor for file watching and callback dispatch,
     delegating all monitor logic to the parent class (DRY principle).
+
+    Unlike MoonDataMonitor, this does NOT use periodic timeout updates
+    since rain forecast has no time-sensitive values. Only file changes
+    trigger callbacks (file monitor only, no timeout).
     """
 
     def get_file_path(self) -> Path:
         """Return path to forecast-data.json."""
         return Path.home() / ".cache" / "weather" / "forecast-data.json"
+
+    def start_watching(self) -> None:
+        """
+        Start file monitoring only (no periodic timeout).
+        Rain forecast has no time-sensitive values, so file monitor alone is sufficient.
+        """
+        if self._file_monitor is not None:
+            return  # Already started
+
+        # Load initial data
+        self._data = self._load_data()
+        self._dispatch_callbacks()
+
+        # Set up file monitor only (skip timeout since no time-sensitive values)
+        file_path = self.get_file_path()
+        gfile = Gio.File.new_for_path(str(file_path.parent))
+        try:
+            self._file_monitor = gfile.monitor_directory(
+                Gio.FileMonitorFlags.NONE, None)
+            self._monitor_signal_id = self._file_monitor.connect(
+                "changed", self._on_file_changed)
+        except Exception:
+            # Monitor setup failed; gracefully degrade
+            self._file_monitor = None
 
 
 # ─── Row Widgets ─────────────────────────────────────────────────────────────
@@ -3375,17 +3403,16 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
     def _on_rain_forecast_updated(self, data: dict[str, Any]) -> None:
         """
-        Callback fired when rain forecast data changes (file reload) OR every second (timeout).
-        Updates the rain forecast content in-place without rebuilding.
+        Callback fired when rain forecast data changes (file monitor detection).
+        Updates the rain forecast content in-place.
 
-        Unlike moon data, this doesn't need to handle unavailable states since
-        the rain forecast service gracefully handles missing files. Just rebuild
-        the content rows to reflect the current forecast data.
+        Unlike moon data, rain forecast doesn't have time-sensitive values that change
+        every second. Only the file monitor triggers updates; no periodic timeout.
         """
         if not self._rain_forecast_group or not self._rain_forecast_content_row:
             return
 
-        # Rebuild only the forecast content (keeping spinbuttons stable)
+        # Rebuild forecast content when file changes
         self._rebuild_rain_forecast_section()
 
     # ── File Operations ───────────────────────────────────────────────────────
