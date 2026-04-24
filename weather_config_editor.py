@@ -1825,7 +1825,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         tz = WeatherConfigWindow._resolve_tz(tz_name)
         dt = (datetime.fromtimestamp(epoch_val, tz=tz)
               if tz else datetime.fromtimestamp(epoch_val))
-        time_str = dt.strftime("%I:%M %p").lstrip("0").upper()
+        time_str = dt.strftime("%I:%M %p").upper()
 
         # Cross-date check: compare calendar date of epoch vs. reference date
         try:
@@ -2543,7 +2543,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         tz = WeatherConfigWindow._resolve_tz(tz_name)
         dt = (datetime.fromtimestamp(epoch, tz=tz)
               if tz else datetime.fromtimestamp(epoch))
-        return dt.strftime("%I:%M %p").lstrip("0").upper()
+        return dt.strftime("%I:%M %p").upper()
 
     @staticmethod
     def _format_sun_date(epoch: int, tz_name: str) -> str:
