@@ -5,9 +5,9 @@
       <default>""</default>
       <summary>Last opened config file</summary>
     </key>
-    <key name="last-ip-mapping-path" type="s">
+    <key name="last-location-mapping-path" type="s">
       <default>""</default>
-      <summary>Last used IP mapping CSV file</summary>
+      <summary>Last used location mapping CSV file</summary>
     </key>
   </schema>
 </schemalist>
