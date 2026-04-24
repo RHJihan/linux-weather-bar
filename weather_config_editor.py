@@ -1583,6 +1583,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # for in-place Moon Data refresh
         self._moon_value_labels: dict[str, Gtk.Label] = {}
         self._moon_data_group: Optional[Adw.PreferencesGroup] = None
+        self._sun_data_group: Optional[Adw.PreferencesGroup] = None
 
         # ── Live moon data monitoring ──────────────────────────────────────
         self._moon_monitor = MoonDataMonitor()
@@ -2507,6 +2508,174 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         return group
 
+    # ── Sun Data helpers ──────────────────────────────────────────────────────
+
+    WEATHER_SCRIPT = "$HOME/.local/share/bin/linux-weather-bar/linux-weather-bar.sh"
+
+    @staticmethod
+    def _load_weather_data() -> tuple[dict[str, Any], Optional[str]]:
+        """
+        Load ~/.cache/weather/weather-data.json.
+
+        Returns (data, error_message).  On success error_message is None.
+        On failure data is {} and error_message describes the problem.
+        """
+        weather_path = Path.home() / ".cache" / "weather" / "weather-data.json"
+        try:
+            data = json.loads(weather_path.read_text(encoding="utf-8"))
+            # Validate minimal required fields
+            sys_block = data.get("sys", {})
+            if not isinstance(sys_block.get("sunrise"), (int, float)):
+                return {}, "weather-data.json is missing sys.sunrise"
+            if not isinstance(sys_block.get("sunset"), (int, float)):
+                return {}, "weather-data.json is missing sys.sunset"
+            return data, None
+        except FileNotFoundError:
+            return {}, "weather-data.json not found"
+        except (json.JSONDecodeError, ValueError) as exc:
+            return {}, f"weather-data.json is invalid: {exc}"
+        except Exception as exc:
+            return {}, str(exc)
+
+    @staticmethod
+    def _format_sun_epoch(epoch: int, tz_name: str) -> str:
+        """Format a Unix epoch as '6:12 AM' in the local timezone."""
+        tz = WeatherConfigWindow._resolve_tz(tz_name)
+        dt = (datetime.fromtimestamp(epoch, tz=tz)
+              if tz else datetime.fromtimestamp(epoch))
+        return dt.strftime("%I:%M %p").lstrip("0").upper()
+
+    @staticmethod
+    def _format_sun_date(epoch: int, tz_name: str) -> str:
+        """Format a Unix epoch as '24 April 2026' in the local timezone."""
+        tz = WeatherConfigWindow._resolve_tz(tz_name)
+        dt = (datetime.fromtimestamp(epoch, tz=tz)
+              if tz else datetime.fromtimestamp(epoch))
+        return f"{dt.day} {dt.strftime('%B %Y')}"
+
+    def _on_weather_update_clicked(self, btn: Gtk.Button) -> None:
+        """Run the weather script to refresh weather-data.json."""
+        script = os.path.expandvars(self.WEATHER_SCRIPT)
+
+        btn.set_sensitive(False)
+        btn.set_label("Updating…")
+
+        def _worker() -> None:
+            try:
+                subprocess.run(["bash", "-c", script], check=True, timeout=30)
+                GLib.idle_add(_on_success)
+            except Exception as exc:
+                GLib.idle_add(_on_error, str(exc))
+
+        def _on_success() -> bool:
+            btn.set_label("Update")
+            btn.set_sensitive(True)
+            # Rebuild sun data section with fresh data
+            self._rebuild_sun_data_section()
+            self._show_toast("Weather data updated successfully")
+            return False
+
+        def _on_error(msg: str) -> bool:
+            btn.set_label("Update")
+            btn.set_sensitive(True)
+            self._show_error(f"Weather script failed:\n{msg}")
+            return False
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _rebuild_sun_data_section(self) -> None:
+        """Replace the sun data group in-place after a successful update."""
+        if self._sun_data_group is None:
+            return
+        moon_data_group = self._moon_data_group
+        old = self._sun_data_group
+        new = self._build_sun_data_section()
+        self._groups_box.insert_child_after(new, old)
+        self._groups_box.remove(old)
+        self._sun_data_group = new
+
+    def _build_sun_data_section(self) -> Adw.PreferencesGroup:
+        """
+        Load ~/.cache/weather/weather-data.json and display sunrise / sunset
+        in a compact two-column layout matching the Moon Data style.
+
+        Shows an Update button only when the file is absent or invalid.
+        The epoch date (e.g. '24 April 2026') is shown as group description.
+        Times are formatted as 12-hour with local timezone AM/PM.
+        """
+        group = Adw.PreferencesGroup()
+        group.set_title("Sunrise &amp; Sunset")
+        group.set_margin_top(4)
+
+        data, error = self._load_weather_data()
+
+        if error:
+            # Show update button only on error
+            update_btn = Gtk.Button(label="Update")
+            update_btn.add_css_class("flat")
+            update_btn.set_valign(Gtk.Align.CENTER)
+            update_btn.set_tooltip_text("Run weather script to fetch weather-data.json")
+            update_btn.connect("clicked", self._on_weather_update_clicked)
+            group.set_header_suffix(update_btn)
+
+            placeholder = Adw.ActionRow()
+            placeholder.set_activatable(False)
+            placeholder.set_title("Sun data unavailable")
+            placeholder.set_subtitle(error)
+            group.add(placeholder)
+            return group
+
+        sys_block = data["sys"]
+        sunrise_ep = int(sys_block["sunrise"])
+        sunset_ep = int(sys_block["sunset"])
+
+        tz_entry = self._entries.get("TIMEZONE", None)
+        tz_name = tz_entry.display_value.strip() if tz_entry else ""
+
+        # Use sunrise date as the reference date for the group description
+        group.set_description(self._format_sun_date(sunrise_ep, tz_name))
+
+        # Build the two-column row exactly as in _build_moon_data_section
+        main_row = Adw.ActionRow()
+        main_row.set_activatable(False)
+
+        outer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        outer_box.set_hexpand(True)
+        outer_box.set_margin_start(16)
+        outer_box.set_margin_end(16)
+        outer_box.set_margin_top(12)
+        outer_box.set_margin_bottom(12)
+
+        def _make_cell(dim_text: str, value_text: str) -> Gtk.Grid:
+            grid = Gtk.Grid(column_spacing=12, row_spacing=8)
+            grid.set_hexpand(True)
+            grid.set_halign(Gtk.Align.FILL)
+            lbl = Gtk.Label(label=f"{dim_text}:")
+            lbl.set_halign(Gtk.Align.START)
+            lbl.add_css_class("dim-label")
+            val = Gtk.Label(label=value_text)
+            val.set_halign(Gtk.Align.END)
+            val.set_hexpand(True)
+            val.set_selectable(False)
+            grid.attach(lbl, 0, 0, 1, 1)
+            grid.attach(val, 1, 0, 1, 1)
+            return grid
+
+        left_grid = _make_cell("Sunrise", self._format_sun_epoch(sunrise_ep, tz_name))
+        right_grid = _make_cell("Sunset", self._format_sun_epoch(sunset_ep, tz_name))
+
+        vsep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        vsep.set_margin_start(24)
+        vsep.set_margin_end(24)
+
+        outer_box.append(left_grid)
+        outer_box.append(vsep)
+        outer_box.append(right_grid)
+
+        main_row.set_child(outer_box)
+        group.add(main_row)
+        return group
+
     def _build_preferences(self) -> None:
         """Rebuild preference groups from loaded entries."""
 
@@ -2548,10 +2717,19 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
             # Only add group if it has rows
             if rows:
+                # Suppress the "Sunrise & Sunset" title — Sun Data section
+                # immediately above it already provides the visual context.
+                if group_name == "Sunrise &amp; Sunset":
+                    group.set_title("")
                 self._groups_box.append(group)
                 self._group_widgets[group_name] = (group, rows)
 
-            # Inject Moon Data section immediately after Sunrise & Sunset group
+            # Inject Sun Data section immediately after Configuration group,
+            if group_name == "Configuration":
+                self._sun_data_group = self._build_sun_data_section()
+                self._groups_box.append(self._sun_data_group)
+
+            # Inject Moon Data section immediately after Sunrise & Sunset group,
             if group_name == "Sunrise &amp; Sunset":
                 self._moon_data_group = self._build_moon_data_section()
                 self._groups_box.append(self._moon_data_group)

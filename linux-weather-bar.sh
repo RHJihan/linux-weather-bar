@@ -22,6 +22,9 @@ readonly SUN_DATA_FILE="${HOME}/.cache/weather/sun-data.json"
 readonly MOON_API_URL="https://astroapi.byhrast.com/moon.php"
 # Path to moon data cache file
 readonly MOON_DATA_FILE="${HOME}/.cache/weather/moon-data.json"
+# Path to weather and forecast API response cache files
+readonly WEATHER_DATA_FILE="${HOME}/.cache/weather/weather-data.json"
+readonly FORECAST_DATA_FILE="${HOME}/.cache/weather/forecast-data.json"
 
 # ─── Shared Moon Phase Data (arrays) ───────────────────────────────────────────
 readonly -a MOON_PHASE_NAMES=("New Moon" "Waxing Crescent" "First Quarter" "Waxing Gibbous" "Full Moon" "Waning Gibbous" "Last Quarter" "Waning Crescent")
@@ -245,6 +248,10 @@ fetch_weather_data() {
     # Validate JSON
     echo "$response" | jq -e . >/dev/null 2>&1 || return 1
 
+    # Persist formatted response to cache file
+    mkdir -p "$(dirname "$WEATHER_DATA_FILE")"
+    echo "$response" | jq '.' > "$WEATHER_DATA_FILE"
+
 	echo "$response"
 }
 
@@ -389,6 +396,10 @@ fetch_forecast_data() {
 	response=$(curl -sf "$url" 2>/dev/null) || return 1
 
     echo "$response" | jq -e . >/dev/null 2>&1 || return 1
+
+    # Persist formatted response to cache file
+    mkdir -p "$(dirname "$FORECAST_DATA_FILE")"
+    echo "$response" | jq '.' > "$FORECAST_DATA_FILE"
 
     echo "$response"
 }
