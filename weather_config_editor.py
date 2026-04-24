@@ -2632,7 +2632,11 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         tz_entry = self._entries.get("TIMEZONE", None)
         tz_name = tz_entry.display_value.strip() if tz_entry else ""
 
-        # Use sunrise date as the reference date for the group description
+        tz = self._resolve_tz(tz_name)
+        now = datetime.now(tz) if tz else datetime.now()
+        now_ts = int(now.timestamp())
+
+        # Group description
         group.set_description(self._format_sun_date(sunrise_ep, tz_name))
 
         # Build the two-column row exactly as in _build_moon_data_section
@@ -2646,23 +2650,42 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         outer_box.set_margin_top(12)
         outer_box.set_margin_bottom(12)
 
-        def _make_cell(dim_text: str, value_text: str) -> Gtk.Grid:
+        def _make_cell(dim_text: str, value_text: str, is_past: bool) -> Gtk.Grid:
             grid = Gtk.Grid(column_spacing=12, row_spacing=8)
             grid.set_hexpand(True)
             grid.set_halign(Gtk.Align.FILL)
+
             lbl = Gtk.Label(label=f"{dim_text}:")
             lbl.set_halign(Gtk.Align.START)
             lbl.add_css_class("dim-label")
+
             val = Gtk.Label(label=value_text)
             val.set_halign(Gtk.Align.END)
             val.set_hexpand(True)
             val.set_selectable(False)
+
+            # Apply dimming if the event is in the past
+            if is_past:
+                val.add_css_class("dim-label")
+
             grid.attach(lbl, 0, 0, 1, 1)
             grid.attach(val, 1, 0, 1, 1)
             return grid
 
-        left_grid = _make_cell("Sunrise", self._format_sun_epoch(sunrise_ep, tz_name))
-        right_grid = _make_cell("Sunset", self._format_sun_epoch(sunset_ep, tz_name))
+        sunrise_past = now_ts > sunrise_ep
+        sunset_past = now_ts > sunset_ep
+
+        left_grid = _make_cell(
+            "Sunrise",
+            self._format_sun_epoch(sunrise_ep, tz_name),
+            sunrise_past
+        )
+
+        right_grid = _make_cell(
+            "Sunset",
+            self._format_sun_epoch(sunset_ep, tz_name),
+            sunset_past
+        )
 
         vsep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
         vsep.set_margin_start(24)
