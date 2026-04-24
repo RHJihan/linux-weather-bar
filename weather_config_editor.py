@@ -1783,7 +1783,64 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             return None
 
     @staticmethod
-    def _format_moon_value(key: str, value: Any) -> str:
+    def _resolve_tz(tz_name: str):
+        """
+        Return a tzinfo for *tz_name* (IANA string), trying zoneinfo then pytz.
+        Returns None if the name is blank or unresolvable.
+        """
+        if not tz_name:
+            return None
+        try:
+            import zoneinfo
+            return zoneinfo.ZoneInfo(tz_name)
+        except Exception:
+            pass
+        try:
+            import pytz  # type: ignore
+            return pytz.timezone(tz_name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _format_moon_time(epoch_val: int, date_str: str, tz_name: str = "") -> str:
+        """
+        Format a moon epoch as a local time string in *tz_name*.
+
+        If the epoch's calendar date (in the configured timezone) differs from
+        *date_str* (``DD/MM/YYYY``), the date is appended: ``12:43 AM (25 April)``.
+
+        Parameters
+        ----------
+        epoch_val:
+            Unix timestamp for the moonrise or moonset event.
+        date_str:
+            The moon-data ``date`` field (``DD/MM/YYYY``) used as the
+            reference day.
+        tz_name:
+            IANA timezone name (e.g. ``Asia/Dhaka``).  Required for a correct
+            cross-date comparison -- without it the system timezone is used,
+            which may produce the wrong calendar date.
+        """
+        tz = WeatherConfigWindow._resolve_tz(tz_name)
+        dt = (datetime.fromtimestamp(epoch_val, tz=tz)
+              if tz else datetime.fromtimestamp(epoch_val))
+        time_str = dt.strftime("%I:%M %p").lstrip("0").upper()
+
+        # Cross-date check: compare calendar date of epoch vs. reference date
+        try:
+            ref_day, ref_month, ref_year = (int(p) for p in date_str.split("/"))
+            from datetime import date as _date
+            ref_date = _date(ref_year, ref_month, ref_day)
+            if dt.date() != ref_date:
+                day_label = f"{dt.day} {dt.strftime('%B')}"
+                return f"{day_label} {time_str}"
+        except Exception:
+            pass  # unparseable date_str -- show plain time
+
+        return time_str
+
+    @staticmethod
+    def _format_moon_value(key: str, value: Any, date_str: str = "", tz_name: str = "") -> str:
         if value is None:
             return "—"
         if key == "phase_value":
@@ -1803,8 +1860,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 epoch_val = int(float(text))
                 if epoch_val == 0:
                     return "Not visible"
-                dt = datetime.fromtimestamp(epoch_val)
-                return dt.strftime("%I:%M %p").upper()
+                return WeatherConfigWindow._format_moon_time(epoch_val, date_str, tz_name)
             except (ValueError, TypeError):
                 return text
         if key == "retrieved_at":
@@ -2282,8 +2338,11 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 return data.get("distance")
             return data.get(key)
 
+        _date_str = str(data.get("date", "")).strip()
+        _tz_entry = self._entries.get("TIMEZONE", None)
+        _tz_name = _tz_entry.display_value.strip() if _tz_entry else ""
         for key, val_label in self._moon_value_labels.items():
-            val_label.set_label(self._format_moon_value(key, _get(key)))
+            val_label.set_label(self._format_moon_value(key, _get(key), _date_str, _tz_name))
 
         # Refresh the optional alert row
         if hasattr(self, "_moon_alert_row") and self._moon_alert_row is not None:
@@ -2381,6 +2440,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 return data.get("distance")
             return data.get(key)
 
+        _date_str = str(data.get("date", "")).strip()
+        _tz_entry = self._entries.get("TIMEZONE", None)
+        _tz_name = _tz_entry.display_value.strip() if _tz_entry else ""
         fields = list(self._MOON_FIELD_LABELS.items())
         for i, (key, label) in enumerate(fields):
             target = left_grid if i % 2 == 0 else right_grid
@@ -2391,7 +2453,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             lbl.add_css_class("dim-label")
 
             val = Gtk.Label(label=self._format_moon_value(
-                key, _get_moon_value(key)))
+                key, _get_moon_value(key), _date_str, _tz_name))
             val.set_halign(Gtk.Align.END)
             val.set_hexpand(True)
             val.set_selectable(False)
@@ -2561,13 +2623,15 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 return data.get("distance")
             return data.get(key)
 
+        _date_str = str(data.get("date", "")).strip()
+        _tz_entry = self._entries.get("TIMEZONE", None)
+        _tz_name = _tz_entry.display_value.strip() if _tz_entry else ""
         for key, val_label in self._moon_value_labels.items():
-            val_label.set_label(self._format_moon_value(key, _get(key)))
+            val_label.set_label(self._format_moon_value(key, _get(key), _date_str, _tz_name))
 
         # Update alert row with both lunar window progress + static alerts
         if self._moon_alert_row is not None and self._moon_alert_label is not None:
-            tz_name = self._entries.get("TIMEZONE", None)
-            tz_name = tz_name.display_value.strip() if tz_name else ""
+            tz_name = _tz_name
 
             # Combine progress (updates every second) + static alerts
             progress = self._compute_lunar_window_progress(data)
