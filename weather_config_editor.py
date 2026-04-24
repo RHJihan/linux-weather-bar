@@ -312,7 +312,7 @@ class LocationEntry:
         return f"lat={self.lat}&lon={self.lon}"
 
 
-class IpMappingStore:
+class LocationMappingStore:
     """
     Loads location_mappings.csv, deduplicates by (NAME, LATITUDE, LONGITUDE),
     and persists the last used CSV path via GSettings (same key namespace).
@@ -1140,10 +1140,10 @@ class LocationRow(BaseRow):
 
     def __init__(self, entry: ConfigEntry,
                  on_change: Callable[[ConfigEntry], None],
-                 ip_store: "IpMappingStore") -> None:
+                 location_store: "LocationMappingStore") -> None:
         super().__init__(entry, on_change)
 
-        self._ip_store = ip_store
+        self._location_store = location_store
         self._locations: list[LocationEntry] = []
         self._sdd: Optional[SearchableDropDown] = None
 
@@ -1213,11 +1213,11 @@ class LocationRow(BaseRow):
     # ── CSV loading ───────────────────────────────────────────────────────────
 
     def _load_locations(self) -> None:
-        csv_path = self._ip_store.resolve_csv()
+        csv_path = self._location_store.resolve_csv()
         if csv_path:
             try:
-                self._locations = self._ip_store.load(csv_path)
-                self._ip_store.save_last_csv(csv_path)
+                self._locations = self._location_store.load(csv_path)
+                self._location_store.save_last_csv(csv_path)
             except Exception:
                 self._locations = []
         else:
@@ -1472,11 +1472,11 @@ class NumericOrSentinelRow(BaseRow):
 
 def make_row(entry: ConfigEntry,
              on_change: Callable[[ConfigEntry], None],
-             ip_store: Optional["IpMappingStore"] = None,
+             location_store: Optional["LocationMappingStore"] = None,
              tz_store: Optional["TimezoneStore"] = None) -> BaseRow:
 
     if entry.schema.key == "LOCATION":
-        return LocationRow(entry, on_change, ip_store or IpMappingStore(None))
+        return LocationRow(entry, on_change, location_store or LocationMappingStore(None))
 
     if entry.schema.key == "TIMEZONE":
         return TimezoneRow(entry, on_change, tz_store or TimezoneStore())
@@ -2535,10 +2535,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
                 # Create row widget
                 app = self.get_application()
-                ip_store = getattr(app, "ip_store", None)
+                location_store = getattr(app, "location_store", None)
                 tz_store = getattr(app, "tz_store", None)
                 row = make_row(entry, self._on_entry_changed,
-                               ip_store, tz_store)
+                               location_store, tz_store)
 
                 # Add to group
                 group.add(row)
@@ -2551,8 +2551,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 self._groups_box.append(group)
                 self._group_widgets[group_name] = (group, rows)
 
-            # Inject Moon Data section immediately after Moon Phase group
-            if group_name == "Moon Phase":
+            # Inject Moon Data section immediately after Sunrise & Sunset group
+            if group_name == "Sunrise &amp; Sunset":
                 self._moon_data_group = self._build_moon_data_section()
                 self._groups_box.append(self._moon_data_group)
 
@@ -2843,7 +2843,7 @@ class WeatherConfigApp(Adw.Application):
         except Exception:
             self.settings = None
 
-        self.ip_store = IpMappingStore(self.settings)
+        self.location_store = LocationMappingStore(self.settings)
         self.tz_store = TimezoneStore()   # loaded lazily on first row construction
 
     def _on_activate(self, app: Adw.Application) -> None:
