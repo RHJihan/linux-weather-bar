@@ -1,98 +1,125 @@
 # Weather Configuration File
 # Copy this to .weather_config and update with your credentials
 
-# OWM API key (Get yours at https://openweathermap.org/api)
-readonly API_KEY="00000000000000000000000000000000"
-# Your OpenWeatherMap subscription tier
-readonly API_KEY_TYPE="FREE"
+# ─── API Keys ─────────────────────────────────────────────────────────────────
 
-# Moon Phase API key (Get yours at https://astroapi.byhrast.com)
+# OpenWeatherMap API key — https://openweathermap.org/api
+readonly API_KEY="00000000000000000000000000000000"
+
+# OpenWeatherMap subscription tier: FREE | PRO
+readonly API_KEY_TYPE="PRO"
+
+# AstroAPI moon phase key — https://astroapi.byhrast.com
 readonly MOON_API_KEY="0000000000000000000000000000000000000000000000000000000000000000"
 
-# Coordinates (latitude and longitude)
-# Example locations:
-#   DHAKA:               lat=23.7621&lon=90.3785
-#   Washington, D.C.:    lat=38.8977&lon=-77.0365
-#   New York:            lat=40.7579&lon=-73.9855
-readonly LOCATION="lat=23.7621&lon=90.3785"  # DHAKA
+# ─── Location ─────────────────────────────────────────────────────────────────
 
-# Time zone (IANA time zone, e.g. Asia/Dhaka)
+# Target coordinates (lat/lon). Examples:
+#   Dhaka:          lat=23.7621&lon=90.3785
+#   Washington DC:  lat=38.8977&lon=-77.0365
+#   New York:       lat=40.7579&lon=-73.9855
+readonly LOCATION="lat=23.7621&lon=90.3785"
+
+# IANA timezone — https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 readonly TIMEZONE="Asia/Dhaka"
 
 # ─── Network ──────────────────────────────────────────────────────────────────
-# Number of attempts before giving up on connectivity
+
+# Max retries before giving up on connectivity
 readonly MAX_CONNECTIVITY_RETRIES=5
-# Seconds to wait between each retry attempt
+
+# Seconds between each retry
 readonly CONNECTIVITY_RETRY_DELAY=5
 
-# ─── Configuration ────────────────────────────────────────────────────────────
-# Show 'feels like' when it differs by this many °C,Set to "disable" to always hide the feels-like output.
+# ─── General ──────────────────────────────────────────────────────────────────
+
+# Show "feels like" temp when it differs by this many °C; "disable" to always hide
 readonly FEELS_LIKE_THRESHOLD=5
-# Show rain warnings in the forecast
+
+# Show rain warnings in forecast
 readonly SHOW_RAIN_FORECAST=true
-# Minimum probability (0–100%) to trigger a warning (0.80 = 80%)
+
+# Minimum probability (0.0–1.0) to trigger a rain warning
 readonly RAIN_FORECAST_THRESHOLD=0.80
-# How many hours ahead to check for rain
+
+# Hours ahead to check for rain
 readonly RAIN_FORECAST_WINDOW=2
 
 # ─── Sunrise & Sunset ─────────────────────────────────────────────────────────
-# Show sunrise and sunset times
+
 readonly SHOW_SUNRISE_SUNSET=true
-# Alert this many minutes before sunrise
+
+# Minutes before sunrise/sunset to show alert
 readonly SUNRISE_WARNING_THRESHOLD=45
-# Alert this many minutes before sunset
 readonly SUNSET_WARNING_THRESHOLD=45
-# true → display even when it's currently raining; false → suppress during active rain
+
+# Show sunrise/sunset during active rain
 readonly SHOW_SUNRISE_SUNSET_DURING_RAIN=true
-# true → display even when rain is in the forecast; false → suppress when rain expected
+
+# Show sunrise/sunset when rain is forecast
 readonly SHOW_SUNRISE_SUNSET_WITH_RAIN_FORECAST=true
 
 # ─── Moonrise & Moonset ───────────────────────────────────────────────────────
-# Show moonrise and moonset times
+
 readonly SHOW_MOONRISE_MOONSET=true
-# Controls moonrise display:
-# - "sunset": show moonrise immediately after sunset if it occurs after sunset (skip if before)
-# - Integer (e.g., 30): alert this many minutes before moonrise
+
+# Alert timing before moonrise: "sunset" = show only if moonrise is after sunset;
+# integer = minutes before moonrise
 readonly MOONRISE_WARNING_THRESHOLD=45
-# Controls moonset display:
-# - "sunset": show moonset if it occurs before sunrise (skip if after)
-# - Integer (e.g., 30): alert this many minutes before moonset
+
+# Alert timing before moonset: "sunset" = show only if moonset is before sunrise;
+# integer = minutes before moonset
 readonly MOONSET_WARNING_THRESHOLD=45
-# true → include moonrise/moonset times that fall during daylight
+
+# Show moonrise/moonset times that fall during daylight hours
 readonly SHOW_MOONRISE_MOONSET_DURING_DAYTIME=false
-# Suppress moonrise/moonset when the moon is too dim to be visible
+
+# Hide moonrise/moonset when the moon is too dim to be visible
 readonly SUPPRESS_NOT_VISIBLE_MOONRISE_MOONSET=false
-# true → display even when it's currently raining; false → suppress during active rain
+
+# Show moonrise/moonset during active rain
 readonly SHOW_MOONRISE_MOONSET_DURING_RAIN=true
-# true → display even when rain is in the forecast; false → suppress when rain expected
+
+# Show moonrise/moonset when rain is forecast
 readonly SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST=false
 
 # ─── Moon Phase ───────────────────────────────────────────────────────────────
-# Show the current moon phase
+
 readonly MOON_PHASE_ENABLED=true
-# Max age (hours) for lunar cache freshness during active moon window before refresh is triggered.
+
+# Max age (hours) of lunar cache before refresh
 readonly MOON_DATA_CACHE_MAX_AGE=2
-# When to start showing moon phase (after sunset or moonrise):
-#   - Numeric:   Minutes after sunset (or moonrise if it occurs after sunset)
-#   - "moonrise": Show from moonrise onwards
+
+# When to start showing moon phase:
+#   "moonrise" = from moonrise onwards; integer = minutes of delay before moon phase appears, measured from:
+#                   • moonrise  — when SHOW_MOONPHASE_DURING_DAYTIME=true
+#                   • sunset    — when SHOW_MOONPHASE_DURING_DAYTIME=false
 readonly MOON_PHASE_WINDOW_START="moonrise"
-# How long to show it, or until moonset:
-#   - Numeric:   Minutes after MOON_PHASE_WINDOW_START
-#   - "moonset": Show until moonset
+
+# How long to show moon phase:
+#   "moonset" = until moonset; integer = minutes after MOON_PHASE_WINDOW_START
 readonly MOON_PHASE_WINDOW_DURATION="moonset"
-# true → display moon phase regardless of daylight hours
+
+# Show moon phase during daylight hours
 readonly SHOW_MOONPHASE_DURING_DAYTIME=false
-# Suppress moon phase display when the moon is too dim to be visible
+
+# Hide moon phase when the moon is too dim to be visible
 readonly SUPPRESS_NOT_VISIBLE_MOONPHASE=true
-# true → display even when it's currently raining; false → suppress during active rain
+
+# Show moon phase during active rain
 readonly MOON_PHASE_SHOW_DURING_RAIN=true
-# true → display even when rain is in the forecast; false → suppress when rain expected
+
+# Show moon phase when rain is forecast
 readonly MOON_PHASE_SHOW_WITH_RAIN_FORECAST=false
-# true → show phase name in Bengali only
+
+# Show phase name in Bengali only
 readonly SHOW_MOONPHASE_BENGALI=false
-# true → show phase name in both English and Bengali (overrides SHOW_MOONPHASE_BENGALI)
+
+# Show phase name in both English and Bengali (overrides SHOW_MOONPHASE_BENGALI)
 readonly SHOW_MOONPHASE_BILINGUAL=false
-# Append supermoon, super new moon, or micromoon label to phase name when applicable
+
+# Append supermoon/micromoon label to phase name when applicable
 readonly SHOW_APSIDAL_MOON_EVENTS=true
-# Only show supermoon/micromoon if the moon is visible at night
+
+# Suppress supermoon/micromoon label when the moon isn't visible at night
 readonly SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS=false
