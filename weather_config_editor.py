@@ -334,7 +334,7 @@ class LocationMappingStore:
         """Restore last used CSV from GSettings."""
         if not self._settings:
             return None
-        path_str = self._settings.get_string("last-ip-mapping-path")
+        path_str = self._settings.get_string("last-location-mapping-path")
         if path_str:
             p = Path(path_str)
             if p.exists():
@@ -343,7 +343,7 @@ class LocationMappingStore:
 
     def save_last_csv(self, path: Path) -> None:
         if self._settings:
-            self._settings.set_string("last-ip-mapping-path", str(path))
+            self._settings.set_string("last-location-mapping-path", str(path))
 
     def resolve_csv(self) -> Optional[Path]:
         """Priority: last saved → auto-detected in script dir."""
