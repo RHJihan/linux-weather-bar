@@ -155,8 +155,8 @@ SCHEMA: list[VarSchema] = [
     VarSchema("SHOW_RAIN_FORECAST",        "Rain Forecast",            VarType.BOOLEAN,
               "Show rain warnings in the forecast", readonly=True, group="Configuration"),
 
-    VarSchema("RAIN_FORECAST_THRESHOLD",   "Rain Probability Threshold",       VarType.FLOAT,
-              "Minimum probability (0–100%) to trigger a warning",
+    VarSchema("RAIN_FORECAST_THRESHOLD",   "Minimum Precipitation Threshold",       VarType.FLOAT,
+              "Minimum precipitation probability (0.00–1.00) to trigger a warning",
               default=0.7, readonly=True, group="Configuration"),
 
     VarSchema("RAIN_FORECAST_WINDOW",      "Rain Forecast Lookahead Window",       VarType.INTEGER,
