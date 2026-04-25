@@ -3009,7 +3009,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             empty_row.set_activatable(False)
             empty_row.set_title("No upcoming rain detected.")
             empty_row.set_subtitle(
-                "Try lowering the Min Precip threshold."
+                "Try lowering the Minimum Precipitation Threshold."
             )
             return empty_row
 
