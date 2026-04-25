@@ -3547,6 +3547,19 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
     def _on_search_changed(self, widget: Gtk.SearchEntry) -> None:
         self._search_text = widget.get_text().lower()
+        searching = bool(self._search_text)
+
+        # Hide dynamic display-only sections (Rain Forecast, Sun Data, Moon Data)
+        # when a search is active — they have no schema rows to match against and
+        # would otherwise float above the filtered results confusingly.
+        for special_group in (
+            getattr(self, "_rain_forecast_group", None),
+            getattr(self, "_sun_data_group", None),
+            getattr(self, "_moon_data_group", None),
+        ):
+            if special_group is not None:
+                special_group.set_visible(not searching)
+
         for group_name, (group_widget, rows) in self._group_widgets.items():
             group_visible = False
             for row in rows:
