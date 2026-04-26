@@ -1783,8 +1783,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # Local UI threshold — initialised from RAIN_FORECAST_THRESHOLD on
         # first build; independent of global config thereafter.
         self._rain_forecast_threshold_ui: float = 0.7
-        # Local UI lookahead count — initialised from RAIN_FORECAST_WINDOW on
-        # first build; independent of global config thereafter.
+        # Local UI lookahead count — always starts at 3, fully independent of
+        # RAIN_FORECAST_WINDOW.
         self._rain_forecast_lookahead_ui: int = 3
         # Store forecast content container to update without destroying spinbuttons
         self._rain_forecast_content_row: Optional[Gtk.Widget] = None
@@ -3142,17 +3142,6 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 try:
                     self._rain_forecast_threshold_ui = float(
                         global_entry.display_value)
-                except ValueError:
-                    pass
-
-        # ── Initialise lookahead from global config on first build ─────────
-        if self._entries:
-            window_entry = self._entries.get("RAIN_FORECAST_WINDOW")
-            if window_entry:
-                try:
-                    value = int(window_entry.display_value)
-                    # Default minimum is 3 for better UI
-                    self._rain_forecast_lookahead_ui = max(3, value)
                 except ValueError:
                     pass
 
