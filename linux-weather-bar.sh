@@ -423,7 +423,6 @@ get_rain_forecast() {
 		| .list
 		| map(
 			select(
-				(.dt - $now) >= 900 and    # at least 15 minutes from now
 				(.dt - $now) <= $window and
 				(.pop >= $threshold)
 			)
