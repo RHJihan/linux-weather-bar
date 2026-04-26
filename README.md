@@ -390,12 +390,14 @@ GSETTINGS_SCHEMA_DIR=. python weather_config_editor.py
 ## Example Output
 
 ```
-☀️   Clear Sky   32°C (Feels 36°C)    Sunset: 6:18 PM    🌕 Full Moon (Supermoon)
+☀️   Clear Sky   32°C (Feels 36°C)    Sunset: 6:18 PM
 ⛅️   Few Clouds   28°C    🌧️ Rain ≈ 9:00 PM (73%)
+☁️   Scattered Clouds   31°C    🌗 Last Quarter
 🌫️   Haze   28°C    🌕 পূর্ণিমা
 ☁️   Scattered Clouds   28°C    🌕 Full Moon (Supermoon)
 🌦️   Light Rain   26°C
 ☀️   Clear Sky   32°C    Moonset: 8:24 AM
+🌫️   Haze   31°C    ☔️   Moderate Rain ≈ 9:00 PM (80%)
 ```
 
 ---
