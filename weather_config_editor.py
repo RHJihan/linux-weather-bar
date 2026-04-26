@@ -1777,6 +1777,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._moon_alert_row: Optional[Gtk.Box] = None
         self._moon_alert_label: Optional[Gtk.Label] = None
 
+        # ── Weather output section ─────────────────────────────────────────
+        self._weather_output_group: Optional[Adw.PreferencesGroup] = None
+        self._weather_output_label: Optional[Gtk.Label] = None
+
         # ── Rain Forecast section ──────────────────────────────────────────
         self._rain_forecast_service = RainForecastService()
         self._rain_forecast_group: Optional[Adw.PreferencesGroup] = None
@@ -1888,14 +1892,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._banner.set_revealed(True)
         self._main_box.append(self._banner)
 
-        # File path label
-        self._path_label = Gtk.Label(label="No file selected")
-        self._path_label.add_css_class("caption")
-        self._path_label.add_css_class("dim-label")
-        self._path_label.set_halign(Gtk.Align.START)
-        self._path_label.set_margin_top(8)
-        self._path_label.set_margin_bottom(8)
-        self._main_box.append(self._path_label)
+        # _path_label is assigned later by _build_weather_output_section
+        # so that the path appears inside the weather output group.
+        self._path_label: Optional[Gtk.Label] = None
 
         # Groups container
         self._groups_box = Gtk.Box(
@@ -2826,6 +2825,102 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._groups_box.remove(old)
         self._sun_data_group = new
 
+    # ── Weather Output section ────────────────────────────────────────────────
+
+    def _run_weather_script_for_output(self) -> str:
+        """Run WEATHER_SCRIPT and return its stdout, or an error message."""
+        script = os.path.expandvars(self.WEATHER_SCRIPT)
+        try:
+            result = subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True, text=True, timeout=30
+            )
+            output = result.stdout.strip()
+            return output if output else "(no output)"
+        except FileNotFoundError:
+            return "(script not found)"
+        except subprocess.TimeoutExpired:
+            return "(timed out)"
+        except Exception as exc:
+            return f"(error: {exc})"
+
+    def _build_weather_output_section(self) -> Adw.PreferencesGroup:
+        """
+        Untitled row showing the live output of WEATHER_SCRIPT.
+        Placed above the Configuration group; hidden during search.
+        """
+        group = Adw.PreferencesGroup()
+        # No title — intentionally blank
+        group.set_margin_top(4)
+
+        row = Adw.ActionRow()
+        row.set_activatable(False)
+
+        # Output label — left-aligned, monospace-friendly, wrapping
+        output_label = Gtk.Label(label="")
+        output_label.set_halign(Gtk.Align.START)
+        output_label.set_hexpand(True)
+        output_label.set_valign(Gtk.Align.CENTER)
+        output_label.set_wrap(True)
+        output_label.set_xalign(0.0)
+        output_label.set_margin_start(16)
+        output_label.set_margin_end(8)
+        output_label.set_margin_top(10)
+        output_label.set_margin_bottom(10)
+        self._weather_output_label = output_label
+
+        # Update button — inline at the end of the row
+        update_btn = Gtk.Button(label="Refresh")
+        update_btn.add_css_class("flat")
+        update_btn.set_valign(Gtk.Align.CENTER)
+        update_btn.set_tooltip_text("Refresh output")
+        update_btn.set_margin_end(8)
+        update_btn.set_margin_top(6)
+        update_btn.set_margin_bottom(6)
+
+        def _on_update_clicked(btn: Gtk.Button) -> None:
+            btn.set_sensitive(False)
+            btn.set_label("Refreshing…")
+
+            def _worker() -> None:
+                output = self._run_weather_script_for_output()
+                GLib.idle_add(_apply, output)
+
+            def _apply(output: str) -> bool:
+                if self._weather_output_label:
+                    self._weather_output_label.set_label(output)
+                btn.set_label("Update")
+                btn.set_sensitive(True)
+                return False
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        update_btn.connect("clicked", _on_update_clicked)
+
+        # Row layout: label expands, button stays fixed on the right
+        row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        row_box.set_hexpand(True)
+        row_box.append(output_label)
+        row_box.append(update_btn)
+
+        row.set_child(row_box)
+        group.add(row)
+
+        # Populate asynchronously so UI shows immediately
+        def _initial_worker() -> None:
+            output = self._run_weather_script_for_output()
+            GLib.idle_add(_initial_apply, output)
+
+        def _initial_apply(output: str) -> bool:
+            if self._weather_output_label:
+                self._weather_output_label.set_label(output)
+            return False
+
+        threading.Thread(target=_initial_worker, daemon=True).start()
+
+        self._weather_output_group = group
+        return group
+
     def _build_sun_data_section(self) -> Adw.PreferencesGroup:
         """
         Load ~/.cache/weather/weather-data.json and display sunrise / sunset
@@ -3269,12 +3364,33 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 # immediately above it already provides the visual context.
                 if group_name == "Sunrise &amp; Sunset":
                     group.set_title("")
+
+                # Inject Weather Output immediately before the Configuration group
+                if group_name == "Configuration":
+                    self._weather_output_group = self._build_weather_output_section()
+                    self._groups_box.append(self._weather_output_group)
+
+                    # Plain path label directly under the group, no row wrapper
+                    config_path_str = str(self._config_path) if self._config_path else "No file loaded"
+                    path_label = Gtk.Label(label=config_path_str)
+                    path_label.set_halign(Gtk.Align.START)
+                    path_label.set_hexpand(True)
+                    path_label.set_wrap(True)
+                    path_label.set_xalign(0.0)
+                    path_label.set_margin_start(4)
+                    path_label.set_margin_top(2)
+                    path_label.set_margin_bottom(4)
+                    path_label.add_css_class("caption")
+                    path_label.add_css_class("dim-label")
+                    self._groups_box.append(path_label)
+                    self._path_label = path_label
+
                 self._groups_box.append(group)
                 self._group_widgets[group_name] = (group, rows)
 
             # Inject Rain Forecast + Sun Data immediately after Configuration
             if group_name == "Configuration":
-                # 1. Rain Forecast comes first
+                # 1. Rain Forecast comes next
                 self._rain_forecast_group = self._build_rain_forecast_section()
                 self._groups_box.append(self._rain_forecast_group)
 
@@ -3488,6 +3604,16 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
             self._show_toast("Configuration saved successfully")
 
+            # Refresh the weather output row with fresh script output
+            if self._weather_output_label is not None:
+                lbl = self._weather_output_label
+
+                def _refresh_output() -> None:
+                    output = self._run_weather_script_for_output()
+                    GLib.idle_add(lambda: lbl.set_label(output) or False)
+
+                threading.Thread(target=_refresh_output, daemon=True).start()
+
             # Advance the baseline so Save deactivates, but keep undo stack
             # intact so the user can still undo changes made before saving.
             self._original_values = {
@@ -3542,6 +3668,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # when a search is active — they have no schema rows to match against and
         # would otherwise float above the filtered results confusingly.
         for special_group in (
+            getattr(self, "_weather_output_group", None),
             getattr(self, "_rain_forecast_group", None),
             getattr(self, "_sun_data_group", None),
             getattr(self, "_moon_data_group", None),
