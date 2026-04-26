@@ -2741,7 +2741,14 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
     # ── Sun Data helpers ──────────────────────────────────────────────────────
 
-    WEATHER_SCRIPT = "$HOME/.local/share/bin/linux-weather-bar/linux-weather-bar.sh"
+    @staticmethod
+    def _find_weather_script() -> str:
+        """
+        Look for linux-weather-bar.sh in the same directory as this Python script.
+        Returns the absolute path if found, or an empty string if not found.
+        """
+        candidate = Path(__file__).resolve().parent / "linux-weather-bar.sh"
+        return str(candidate) if candidate.exists() else ""
 
     @staticmethod
     def _load_weather_data() -> tuple[dict[str, Any], Optional[str]]:
@@ -2786,7 +2793,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
     def _on_weather_update_clicked(self, btn: Gtk.Button) -> None:
         """Run the weather script to refresh weather-data.json."""
-        script = os.path.expandvars(self.WEATHER_SCRIPT)
+        script = self._find_weather_script()
+        if not script:
+            self._show_error("linux-weather-bar.sh not found in the script directory.")
+            return
 
         btn.set_sensitive(False)
         btn.set_label("Updating…")
@@ -2828,8 +2838,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
     # ── Weather Output section ────────────────────────────────────────────────
 
     def _run_weather_script_for_output(self) -> str:
-        """Run WEATHER_SCRIPT and return its stdout, or an error message."""
-        script = os.path.expandvars(self.WEATHER_SCRIPT)
+        """Run the .sh script found next to this file, return its stdout or an error message."""
+        script = self._find_weather_script()
+        if not script:
+            return "(linux-weather-bar.sh not found in script directory)"
         try:
             result = subprocess.run(
                 ["bash", "-c", script],
@@ -3181,7 +3193,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         Run the weather script to refresh forecast-data.json.
         The file monitor will detect the change and automatically update the UI.
         """
-        script = os.path.expandvars(self.WEATHER_SCRIPT)
+        script = self._find_weather_script()
+        if not script:
+            self._show_error("linux-weather-bar.sh not found in the script directory.")
+            return
 
         btn.set_sensitive(False)
         btn.set_label("Updating…")
