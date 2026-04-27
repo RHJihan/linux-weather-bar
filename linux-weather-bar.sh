@@ -482,9 +482,9 @@ format_rain_warning() {
 
     # Build output
     if [[ -n "$rain_date_fmt" ]]; then
-        echo "${icon}   ${rain_desc} ≈ ${rain_date_fmt} ${rain_time^^} (${probability}%)"
+        echo "${icon}  ${rain_desc} ≈ ${rain_date_fmt} ${rain_time^^} (${probability}%)"
     else
-        echo "${icon}   ${rain_desc} ≈ ${rain_time^^} (${probability}%)"
+        echo "${icon}  ${rain_desc} ≈ ${rain_time^^} (${probability}%)"
     fi
 }
 
@@ -1480,7 +1480,7 @@ build_weather_line() {
 	local effective_sunset_epoch="${11:-$sunset_epoch}"
 	local effective_sunrise_epoch="${12:-$sunrise_epoch}"
 
-	local line="               ${icon}   ${desc}   ${temp}°C"
+	local line="               ${icon}  ${desc}  ${temp}°C"
 
 	# Append feels-like if the difference exceeds FEELS_LIKE_THRESHOLD
 	# Can be disabled by setting FEELS_LIKE_THRESHOLD=disable
@@ -1490,7 +1490,7 @@ build_weather_line() {
 		if awk -v diff="$diff" -v threshold="$FEELS_LIKE_THRESHOLD" 'BEGIN { exit !(diff > threshold) }'; then
 			local formatted_feels_like
 			formatted_feels_like=$(format_temperature "$feels_like")
-			line="               ${icon}   ${desc}   ${temp}°C  (Feels ${formatted_feels_like}°C)"
+			line="               ${icon}  ${desc}  ${temp}°C  (Feels ${formatted_feels_like}°C)"
 		fi
 	fi
 

@@ -2837,6 +2837,47 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
     # ── Weather Output section ────────────────────────────────────────────────
 
+    # All emojis that can appear at the start of a weather-bar segment.
+    # Covers every icon in WEATHER_ICONS plus all 8 MOON_PHASE_EMOJIS.
+    _WEATHER_EMOJI_PATTERN: re.Pattern = re.compile(
+        r'\s+(?='
+        # Moon phase emojis (🌑–🌘)
+        r'[\U0001F311-\U0001F318]'
+        r'|[☀️⛅☁️🌧️🌦️⛈️❄️🌫️🌕☔️]'
+        r')'
+    )
+
+    @staticmethod
+    def _format_weather_output(raw: str) -> str:
+        """
+        Split a flat weather-bar output string into one segment per line,
+        where each segment begins with an emoji.
+
+        Input:
+            "🌫️  Haze  26°C    ☔️  Heavy Intensity Rain ≈ 7:00 PM (100%)    🌔  Waxing Gibbous"
+        Output:
+            "🌫️  Haze  26°C\n☔️  Heavy Intensity Rain ≈ 7:00 PM (100%)\n🌔  Waxing Gibbous"
+
+        Lines that do not start with a known emoji are left in place (e.g.
+        error strings like "(script not found)") and returned unchanged.
+        """
+        # All emojis that may appear at the start of a weather-bar segment.
+        # Covers every icon in WEATHER_ICONS plus all 8 MOON_PHASE_EMOJIS.
+        pattern = re.compile(
+            r'\s+(?='
+            # Moon phase emojis 🌑 U+1F311 … 🌘 U+1F318
+            r'[\U0001F311-\U0001F318]'
+            # Explicit weather icons (some are multi-codepoint with VS-16 ️)
+            r'|[☀⛅☁🌧🌦⛈❄🌫🌕☔]'
+            r')'
+        )
+        segments = pattern.split(raw)
+        lines = [seg.strip() for seg in segments if seg.strip()]
+        # If splitting produced nothing useful, return raw unchanged
+        joined = "\n".join(lines) if lines else raw
+        # Wrap in span with line_height attribute
+        return f'<span line_height="1.5">{joined}</span>'
+
     def _run_weather_script_for_output(self) -> str:
         """Run the .sh script found next to this file, return its stdout or an error message."""
         script = self._find_weather_script()
@@ -2868,17 +2909,20 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         row = Adw.ActionRow()
         row.set_activatable(False)
 
-        # Output label — left-aligned, monospace-friendly, wrapping
+        # Output label — left-aligned, wraps on newlines from _format_weather_output
         output_label = Gtk.Label(label="")
         output_label.set_halign(Gtk.Align.START)
         output_label.set_hexpand(True)
         output_label.set_valign(Gtk.Align.CENTER)
         output_label.set_wrap(True)
+        output_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         output_label.set_xalign(0.0)
+        output_label.set_lines(-1)
+        output_label.set_use_markup(True)  # <-- here
         output_label.set_margin_start(16)
         output_label.set_margin_end(8)
-        output_label.set_margin_top(10)
-        output_label.set_margin_bottom(10)
+        output_label.set_margin_top(12)
+        output_label.set_margin_bottom(12)
         self._weather_output_label = output_label
 
         # Update button — inline at the end of the row
@@ -2900,7 +2944,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
             def _apply(output: str) -> bool:
                 if self._weather_output_label:
-                    self._weather_output_label.set_label(output)
+                    self._weather_output_label.set_label(
+                        self._format_weather_output(output)
+                    )
                 btn.set_label("Update")
                 btn.set_sensitive(True)
                 return False
@@ -2925,7 +2971,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         def _initial_apply(output: str) -> bool:
             if self._weather_output_label:
-                self._weather_output_label.set_label(output)
+                self._weather_output_label.set_label(
+                    self._format_weather_output(output)
+                )
             return False
 
         threading.Thread(target=_initial_worker, daemon=True).start()
@@ -3684,7 +3732,11 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
                 def _refresh_output() -> None:
                     output = self._run_weather_script_for_output()
-                    GLib.idle_add(lambda: lbl.set_label(output) or False)
+                    GLib.idle_add(
+                        lambda: lbl.set_label(
+                            self._format_weather_output(output)
+                        ) or False
+                    )
 
                 threading.Thread(target=_refresh_output, daemon=True).start()
 
