@@ -3439,10 +3439,69 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._rain_forecast_monitor.start_watching()
 
     def _on_window_closed(self, *_: Any) -> bool:
-        """Clean up monitoring when window closes."""
-        self._moon_monitor.stop_watching()
-        self._rain_forecast_monitor.stop_watching()
-        return False
+        """
+        GTK4 close-request handler.
+
+        Returns True  → inhibit the close (dialog is shown; we destroy manually).
+        Returns False → allow the close immediately (no unsaved changes).
+        """
+        if not self._has_changes():
+            # No unsaved data — stop monitors and let GTK destroy the window.
+            self._moon_monitor.stop_watching()
+            self._rain_forecast_monitor.stop_watching()
+            return False
+
+        # Unsaved changes exist — show a confirmation dialog and block the close.
+        self._show_unsaved_changes_dialog()
+        return True   # Inhibit automatic destruction.
+
+    def _show_unsaved_changes_dialog(self) -> None:
+        """
+        Present an Adw.AlertDialog (GTK 4.10+ / libadwaita 1.2+) asking the
+        user whether to discard unsaved changes or cancel the close.
+
+        Falls back to Adw.MessageDialog on older libadwaita releases.
+        """
+        # Prefer the modern Adw.AlertDialog (libadwaita ≥ 1.2 / GNOME 43).
+        if hasattr(Adw, "AlertDialog"):
+            dialog = Adw.AlertDialog.new(
+                "Unsaved Changes",
+                "You have unsaved changes. Closing will discard them.",
+            )
+            dialog.add_response("cancel",  "Cancel")
+            dialog.add_response("discard", "Discard Changes")
+            dialog.set_response_appearance(
+                "discard", Adw.ResponseAppearance.DESTRUCTIVE
+            )
+            dialog.set_default_response("cancel")
+            dialog.set_close_response("cancel")
+            dialog.connect("response", self._on_close_dialog_response)
+            dialog.present(self)
+        else:
+            # Fallback: Adw.MessageDialog (libadwaita < 1.2).
+            dialog = Adw.MessageDialog(
+                transient_for=self,
+                heading="Unsaved Changes",
+                body="You have unsaved changes. Closing will discard them.",
+            )
+            dialog.add_response("cancel",  "Cancel")
+            dialog.add_response("discard", "Discard Changes")
+            dialog.set_response_appearance(
+                "discard", Adw.ResponseAppearance.DESTRUCTIVE
+            )
+            dialog.set_default_response("cancel")
+            dialog.set_close_response("cancel")
+            dialog.connect("response", self._on_close_dialog_response)
+            dialog.present()
+
+    def _on_close_dialog_response(self, dialog: Any, response: str) -> None:
+        """Handle the unsaved-changes dialog response."""
+        dialog.close()
+        if response == "discard":
+            # User confirmed — stop monitors then destroy the window.
+            self._moon_monitor.stop_watching()
+            self._rain_forecast_monitor.stop_watching()
+            self.destroy()
 
     def _on_moon_data_updated(self, data: dict[str, Any]) -> None:
         """
