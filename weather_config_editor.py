@@ -112,13 +112,13 @@ DEPENDENCIES: dict[str, list[str]] = {
         "RAIN_FORECAST_WINDOW",
         "SHOW_SUNRISE_SUNSET_WITH_RAIN_FORECAST",
         "SHOW_MOONRISE_MOONSET_WITH_RAIN_FORECAST",
-        "MOON_PHASE_SHOW_WITH_RAIN_FORECAST",
+        "SHOW_MOON_PHASE_WITH_RAIN_FORECAST",
     ],
     "MOON_PHASE_ENABLED": [
         "MOON_PHASE_WINDOW_START",
         "MOON_PHASE_WINDOW_DURATION",
-        "MOON_PHASE_SHOW_DURING_RAIN",
-        "MOON_PHASE_SHOW_WITH_RAIN_FORECAST",
+        "SHOW_MOON_PHASE_DURING_RAIN",
+        "SHOW_MOON_PHASE_WITH_RAIN_FORECAST",
         "SHOW_MOONPHASE_BENGALI",
         "SHOW_MOONPHASE_BILINGUAL",
         "SHOW_APSIDAL_MOON_EVENTS",
@@ -241,11 +241,11 @@ SCHEMA: list[VarSchema] = [
               "Suppress moon phase display when the moon is too dim to be visible",
               readonly=True, group="Moon Phase"),
 
-    VarSchema("MOON_PHASE_SHOW_DURING_RAIN",       "Show While Raining",           VarType.BOOLEAN,
+    VarSchema("SHOW_MOON_PHASE_DURING_RAIN",       "Show While Raining",           VarType.BOOLEAN,
               "Display even when it's currently raining", readonly=True,
               group="Moon Phase"),
 
-    VarSchema("MOON_PHASE_SHOW_WITH_RAIN_FORECAST", "Show When Rain Expected",      VarType.BOOLEAN,
+    VarSchema("SHOW_MOON_PHASE_WITH_RAIN_FORECAST", "Show When Rain Expected",      VarType.BOOLEAN,
               "Display even when rain is in the forecast", readonly=True,
               group="Moon Phase"),
 

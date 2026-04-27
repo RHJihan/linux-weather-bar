@@ -92,8 +92,8 @@ load_or_create_config
 : "${MOON_PHASE_WINDOW_DURATION:=moonset}"
 : "${SHOW_MOONPHASE_DURING_DAYTIME:=false}"
 : "${SUPPRESS_NOT_VISIBLE_MOONPHASE:=false}"
-: "${MOON_PHASE_SHOW_DURING_RAIN:=true}"
-: "${MOON_PHASE_SHOW_WITH_RAIN_FORECAST:=false}"
+: "${SHOW_MOON_PHASE_DURING_RAIN:=true}"
+: "${SHOW_MOON_PHASE_WITH_RAIN_FORECAST:=false}"
 : "${SHOW_MOONPHASE_BENGALI:=false}"
 : "${SHOW_MOONPHASE_BILINGUAL:=false}"
 : "${SHOW_APSIDAL_MOON_EVENTS:=true}"
@@ -1295,7 +1295,7 @@ get_effective_lunar_window() {
 #
 # Globals:
 #   MOON_PHASE_ENABLED, MOON_PHASE_WINDOW_START, MOON_PHASE_WINDOW_DURATION,
-#   MOON_PHASE_SHOW_DURING_RAIN, MOON_PHASE_SHOW_WITH_RAIN_FORECAST,
+#   SHOW_MOON_PHASE_DURING_RAIN, SHOW_MOON_PHASE_WITH_RAIN_FORECAST,
 #   SUPPRESS_NOT_VISIBLE_MOONPHASE, SHOW_MOONPHASE_DURING_DAYTIME
 # Arguments:
 #   $1 - effective_sunset_epoch  (yesterday's if overnight, today's otherwise)
@@ -1392,12 +1392,12 @@ resolve_moon_phase() {
 	fi
 
 	# 10. Check rain suppression (after all other conditions pass)
-	if [[ "$is_currently_raining" == "true" ]] && [[ "$MOON_PHASE_SHOW_DURING_RAIN" != "true" ]]; then
+	if [[ "$is_currently_raining" == "true" ]] && [[ "$SHOW_MOON_PHASE_DURING_RAIN" != "true" ]]; then
 		# Currently raining and suppression enabled — suppress moon phase
 		return 0
 	fi
 
-	if [[ "$has_rain_forecast" == "true" ]] && [[ "$MOON_PHASE_SHOW_WITH_RAIN_FORECAST" != "true" ]] && [[ "$SHOW_RAIN_FORECAST" == "true" ]]; then
+	if [[ "$has_rain_forecast" == "true" ]] && [[ "$SHOW_MOON_PHASE_WITH_RAIN_FORECAST" != "true" ]] && [[ "$SHOW_RAIN_FORECAST" == "true" ]]; then
 		# Rain forecasted and suppression enabled — suppress moon phase
 		return 0
 	fi

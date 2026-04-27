@@ -107,10 +107,10 @@ readonly SHOW_MOONPHASE_DURING_DAYTIME=false
 readonly SUPPRESS_NOT_VISIBLE_MOONPHASE=true
 
 # Show moon phase during active rain
-readonly MOON_PHASE_SHOW_DURING_RAIN=true
+readonly SHOW_MOON_PHASE_DURING_RAIN=true
 
 # Show moon phase when rain is forecast
-readonly MOON_PHASE_SHOW_WITH_RAIN_FORECAST=false
+readonly SHOW_MOON_PHASE_WITH_RAIN_FORECAST=false
 
 # Show phase name in Bengali only
 readonly SHOW_MOONPHASE_BENGALI=false
