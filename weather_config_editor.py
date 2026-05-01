@@ -2224,6 +2224,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         • Folk name  – Always shown when Full Moon; apsidal labels are prefixed
             with the traditional month-based name,
             e.g. "🌕 Supermoon (Flower Moon)" or "🌕 Micromoon (Flower Moon)".
+            When there is no apsidal event the folk name is shown on its own,
+            e.g. "🌕 Flower Moon".
             Derived from moonrise epoch; falls back to plain label if unavailable.
             Super New Moon labels are never prefixed (New Moon has no folk name).
         • Not visible at night – low illumination OR moon down before sunset
@@ -2280,24 +2282,26 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 pass  # malformed epoch — skip this check
 
         # ── Folk name resolution (Full Moon only) ──────────────────────────────
-        folk_prefix: Optional[str] = None
+        folk_label: Optional[str] = None
         if phase == "Full Moon":
             try:
                 moonrise_ep_for_name = int(float(moonrise_str)) if moonrise_str else 0
                 if moonrise_ep_for_name > 0:
                     month = datetime.fromtimestamp(moonrise_ep_for_name).month
-                    folk_prefix = WeatherConfigWindow._get_full_moon_folk_name(month)
+                    folk_label = WeatherConfigWindow._get_full_moon_folk_name(month)
             except Exception:
                 pass
 
         def _apsidal_label(base: str) -> str:
-            if folk_prefix:
-                return f"{base} ({folk_prefix})"
+            if folk_label:
+                return f"{base} ({folk_label})"
             return base
 
         # ── Supermoon ──────────────────────────────────────────────────────────
         SUPERMOON_THRESHOLD = 367_600
+        _apsidal_fired = False
         if is_new_or_full and distance_km is not None and distance_km <= SUPERMOON_THRESHOLD:
+            _apsidal_fired = True
             if phase == "New Moon":
                 alerts.append("🌑 Super New Moon")
             else:
@@ -2306,10 +2310,18 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # ── Micromoon ──────────────────────────────────────────────────────────
         MICROMOON_THRESHOLD = 401_000
         if is_new_or_full and distance_km is not None and distance_km >= MICROMOON_THRESHOLD:
+            _apsidal_fired = True
             if phase == "New Moon":
                 alerts.append("🌕 Micromoon")
             else:
                 alerts.append(f"🌕 {_apsidal_label('Micromoon')}")
+
+        # ── Standalone folk name (Full Moon, no apsidal event) ─────────────────
+        # If the current moon is a Full Moon with a folk name but no apsidal label
+        # was appended above, show the folk name on its own so it is never silenced
+        # by the absence of a supermoon / micromoon event.
+        if folk_label and not _apsidal_fired:
+            alerts.append(f"🌕 {folk_label}")
 
         # ── Not visible at night ──────────────────────────────────────────────
         not_visible = False
