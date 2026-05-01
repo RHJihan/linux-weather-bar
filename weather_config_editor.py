@@ -122,9 +122,11 @@ DEPENDENCIES: dict[str, list[str]] = {
         "SHOW_MOONPHASE_BENGALI",
         "SHOW_MOONPHASE_BILINGUAL",
         "SHOW_APSIDAL_MOON_EVENTS",
+        "SHOW_FULL_MOON_FOLK_NAME",
         "SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS",
     ],
     "SHOW_APSIDAL_MOON_EVENTS": [
+        "SHOW_FULL_MOON_FOLK_NAME",
         "SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS",
     ],
     "SHOW_MOONRISE_MOONSET": [
@@ -258,6 +260,10 @@ SCHEMA: list[VarSchema] = [
 
     VarSchema("SHOW_APSIDAL_MOON_EVENTS",             "Apsidal Moon Events",          VarType.BOOLEAN,
               "Show supermoon, super new moon, or micromoon label when applicable",
+              readonly=True, group="Moon Phase"),
+
+    VarSchema("SHOW_FULL_MOON_FOLK_NAME",             "Show Full Moon Traditional Name",          VarType.BOOLEAN,
+              "Display the traditional or cultural name of the Full Moon",
               readonly=True, group="Moon Phase"),
 
     VarSchema("SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS", "Suppress Non-Visible Night Apsidal Moon Events", VarType.BOOLEAN,
@@ -2136,18 +2142,50 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             return None, None
 
     @staticmethod
-    def _compute_moon_alert(data: dict[str, Any], tz_name: str = "") -> Optional[str]:
+    def _get_full_moon_folk_name(month: int) -> Optional[str]:
+        """
+        Return the traditional Algonquin/Farmer's Almanac folk name for a full
+        moon in the given month (1–12), or None if the month is out of range.
+
+        Note: September is approximated as 'Harvest Moon'. Strictly, the Harvest
+        Moon is the full moon nearest the autumn equinox, which can fall in
+        October. Accurate resolution would require equinox calculation.
+        """
+        FOLK_NAMES: dict[int, str] = {
+            1:  "Wolf Moon",
+            2:  "Snow Moon",
+            3:  "Worm Moon",
+            4:  "Pink Moon",
+            5:  "Flower Moon",
+            6:  "Strawberry Moon",
+            7:  "Buck Moon",
+            8:  "Sturgeon Moon",
+            9:  "Harvest Moon",    # Approximation — see docstring
+            10: "Hunter's Moon",
+            11: "Beaver Moon",
+            12: "Cold Moon",
+        }
+        return FOLK_NAMES.get(month)
+
+
+    @staticmethod
+    def _compute_moon_alert(data: dict[str, Any], tz_name: str = "", include_window_progress: bool = True) -> Optional[str]:
         """
         Return a one-line alert string combining all applicable conditions,
         or None when nothing notable applies.
 
         Conditions (all independent, combined with '. ' when both apply):
-          • Supermoon  – New Moon or Full Moon, distance ≤ 367 600 km
+        • Supermoon  – New Moon or Full Moon, distance ≤ 367 600 km
             (Super New Moon when phase is New Moon)
-          • Micromoon  – New Moon or Full Moon, distance ≥ 401 000 km
+        • Micromoon  – New Moon or Full Moon, distance ≥ 401 000 km
             Note: Supermoon and Micromoon are mutually exclusive by their
             distance thresholds and therefore cannot both trigger at once.
-          • Not visible at night – low illumination OR moon down before sunset
+        • Folk name  – Always shown when Full Moon; apsidal labels are prefixed
+            with the traditional month-based name,
+            e.g. "🌕 Supermoon (Flower Moon)" or "🌕 Micromoon (Flower Moon)".
+            Derived from moonrise epoch; falls back to plain label if unavailable.
+            Super New Moon labels are never prefixed (New Moon has no folk name).
+        • Not visible at night – low illumination OR moon down before sunset
         """
         phase = str(data.get("phase", "")).strip()
         illumination_raw = str(
@@ -2178,40 +2216,59 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # ── Currently in moon window ───────────────────────────────────────────
         # A moon window is defined as the period between moonrise and moonset.
         # Epochs of zero (or missing) mean the data is unavailable — skip silently.
-        try:
-            moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
-            moonset_ep = int(float(moonset_str)) if moonset_str else 0
+        if include_window_progress:
+            try:
+                moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
+                moonset_ep = int(float(moonset_str)) if moonset_str else 0
 
-            if moonrise_ep > 0 and moonset_ep > 0:
-                now_ep = int(datetime.now().timestamp())
+                if moonrise_ep > 0 and moonset_ep > 0:
+                    now_ep = int(datetime.now().timestamp())
 
-                if moonrise_ep <= now_ep <= moonset_ep:
-                    window_total = moonset_ep - moonrise_ep
-                    elapsed = now_ep - moonrise_ep
+                    if moonrise_ep <= now_ep <= moonset_ep:
+                        window_total = moonset_ep - moonrise_ep
+                        elapsed = now_ep - moonrise_ep
 
-                    if window_total > 0:
-                        percent = int((elapsed / window_total) * 100)
-                        percent = max(0, min(percent, 100))
-                    else:
-                        percent = 0
+                        if window_total > 0:
+                            percent = int((elapsed / window_total) * 100)
+                            percent = max(0, min(percent, 100))
+                        else:
+                            percent = 0
 
-                    alerts.append(f"Currently in lunar window ({percent}%)")
-        except Exception:
-            pass  # malformed epoch — skip this check
+                        alerts.append(f"Currently in lunar window ({percent}%)")
+            except Exception:
+                pass  # malformed epoch — skip this check
 
-        # ── Supermoon ─────────────────────────────────────────────────────────
-        SUPERMOON_THRESHOLD = 367_600  # km
+        # ── Folk name resolution (Full Moon only) ──────────────────────────────
+        folk_prefix: Optional[str] = None
+        if phase == "Full Moon":
+            try:
+                moonrise_ep_for_name = int(float(moonrise_str)) if moonrise_str else 0
+                if moonrise_ep_for_name > 0:
+                    month = datetime.fromtimestamp(moonrise_ep_for_name).month
+                    folk_prefix = WeatherConfigWindow._get_full_moon_folk_name(month)
+            except Exception:
+                pass
+
+        def _apsidal_label(base: str) -> str:
+            if folk_prefix:
+                return f"{base} ({folk_prefix})"
+            return base
+
+        # ── Supermoon ──────────────────────────────────────────────────────────
+        SUPERMOON_THRESHOLD = 367_600
         if is_new_or_full and distance_km is not None and distance_km <= SUPERMOON_THRESHOLD:
             if phase == "New Moon":
                 alerts.append("🌑 Super New Moon")
             else:
-                alerts.append("🌕 Supermoon")
+                alerts.append(f"🌕 {_apsidal_label('Supermoon')}")   # ← was bare "🌕 Supermoon"
 
-        # ── Micromoon ─────────────────────────────────────────────────────────
-        # (distance thresholds guarantee this never fires alongside Supermoon)
-        MICROMOON_THRESHOLD = 401_000  # km
+        # ── Micromoon ──────────────────────────────────────────────────────────
+        MICROMOON_THRESHOLD = 401_000
         if is_new_or_full and distance_km is not None and distance_km >= MICROMOON_THRESHOLD:
-            alerts.append("🌑 Micromoon")
+            if phase == "New Moon":
+                alerts.append("🌕 Micromoon")
+            else:
+                alerts.append(f"🌕 {_apsidal_label('Micromoon')}")
 
         # ── Not visible at night ──────────────────────────────────────────────
         not_visible = False
@@ -2294,94 +2351,6 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             pass
 
         return None
-
-    def _compute_moon_alert_static(self, data: dict[str, Any], tz_name: str = "") -> Optional[str]:
-        """
-        Like _compute_moon_alert but excludes the lunar window progress check
-        (which updates every second anyway). Useful for static alerts like
-        supermoons and visibility warnings.
-
-        Returns a one-line alert string, or None when nothing notable applies.
-        """
-        phase = str(data.get("phase", "")).strip()
-        illumination_raw = str(
-            data.get("illumination", "0")).replace("%", "").strip()
-        try:
-            illumination = float(illumination_raw)
-        except ValueError:
-            illumination = 0.0
-
-        # Extract distance from position sub-dict
-        position = data.get("position", {})
-        distance_raw = (
-            position.get("distance") if isinstance(position, dict)
-            else data.get("distance")
-        )
-        try:
-            distance_km = float(str(distance_raw))
-        except (ValueError, TypeError):
-            distance_km = None
-
-        moonrise_str = str(data.get("moonrise", "")).strip()
-        moonset_str = str(data.get("moonset", "")).strip()
-
-        is_new_or_full = phase in ("New Moon", "Full Moon")
-
-        alerts: list[str] = []
-
-        # ── Supermoon ─────────────────────────────────────────────────────────
-        SUPERMOON_THRESHOLD = 367_600  # km
-        if is_new_or_full and distance_km is not None and distance_km <= SUPERMOON_THRESHOLD:
-            if phase == "New Moon":
-                alerts.append("🌑 Super New Moon")
-            else:
-                alerts.append("🌕 Supermoon")
-
-        # ── Micromoon ─────────────────────────────────────────────────────────
-        MICROMOON_THRESHOLD = 401_000  # km
-        if is_new_or_full and distance_km is not None and distance_km >= MICROMOON_THRESHOLD:
-            alerts.append("🌑 Micromoon")
-
-        # ── Not visible at night ──────────────────────────────────────────────
-        not_visible = False
-
-        # Condition 1: illumination too low → short-circuit (mirrors bash is_moon_too_dim)
-        if illumination < 5.0:
-            not_visible = True
-
-        # Condition 2: moon's arc must NOT be entirely within the daytime window.
-        #
-        # The moon is a pure day-moon (not visible at night) only when BOTH:
-        #   • moonrise >= sunrise  (rises after dark ends)
-        #   • moonset  <= sunset   (sets before dark begins)
-        # If either end sticks into the night the moon is visible.
-        #
-        # Unknown epochs (0 / missing) → assume visible; don't suppress.
-        if not not_visible:
-            try:
-                moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
-                moonset_ep = int(float(moonset_str)) if moonset_str else 0
-
-                if moonrise_ep > 0 and moonset_ep > 0:
-                    sun_data = WeatherConfigWindow._load_sun_data()
-                    sunset_ep, sunrise_ep = WeatherConfigWindow._get_sun_epochs(
-                        sun_data)
-
-                    if sunset_ep is not None and sunrise_ep is not None:
-                        if moonrise_ep >= sunrise_ep and moonset_ep <= sunset_ep:
-                            not_visible = True
-                    # else: sun epochs unknown → assume visible
-                # else: moon epochs unknown → assume visible
-            except Exception:
-                pass  # malformed times – skip this check
-
-        if not_visible:
-            alerts.append("Not visible at night.")
-
-        if not alerts:
-            return None
-
-        return ". ".join(alerts)
 
     @staticmethod
     def _inject_moon_epochs(data: dict[str, Any]) -> None:
@@ -3607,7 +3576,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
             # Combine progress (updates every second) + static alerts
             progress = self._compute_lunar_window_progress(data)
-            static_alert = self._compute_moon_alert_static(data, tz_name)
+            static_alert = WeatherConfigWindow._compute_moon_alert(data, tz_name, include_window_progress=False)
 
             alert_parts = []
             if progress:

@@ -123,3 +123,6 @@ readonly SHOW_APSIDAL_MOON_EVENTS=true
 
 # Suppress supermoon/micromoon label when the moon isn't visible at night
 readonly SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS=false
+
+# Display traditional cultural names for Full Moons (e.g., Flower Moon, Wolf Moon, Harvest Moon)
+readonly SHOW_FULL_MOON_FOLK_NAME=true

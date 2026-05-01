@@ -1024,7 +1024,6 @@ is_moon_visible_at_night() {
 
 	return 0
 }
-
 #######################################
 # Compute an apsidal syzygy label for the current moon, if applicable.
 #
@@ -1039,6 +1038,12 @@ is_moon_visible_at_night() {
 # effective_sunrise]. This will typically suppress Super New Moon labels
 # since New Moons are near-solar and always have near-zero illumination.
 #
+# When SHOW_FULL_MOON_FOLK_NAME is true, Full Moon labels are prefixed with
+# the traditional Algonquin/Farmer's Almanac folk name for that month,
+# e.g. "Flower Moon · Micromoon" instead of just "Micromoon".
+# Note: September uses a fixed "Harvest Moon" label regardless of whether
+# it is the closest full moon to the autumn equinox.
+#
 # Arguments:
 #   $1 - Moon data JSON string
 #   $2 - moonrise_epoch          (from parse_moon_times; 0 if unknown)
@@ -1046,11 +1051,30 @@ is_moon_visible_at_night() {
 #   $4 - effective_sunset_epoch  (yesterday's if overnight, today's otherwise)
 #   $5 - effective_sunrise_epoch (tomorrow's if past today's sunrise)
 # Outputs:
-#   Label string: "Super New Moon", "Supermoon", or "Micromoon"
+#   Label string: "Super New Moon", "Supermoon", "Micromoon",
+#                 or "<Folk Name> · Supermoon" / "<Folk Name> · Micromoon"
+#                 when SHOW_FULL_MOON_FOLK_NAME is true.
 #   Empty string if none applies, feature disabled, or visibility suppressed
 # Returns:
 #   0 always
 #######################################
+
+# Traditional full moon folk names by month (Algonquin / Farmer's Almanac)
+declare -A FULL_MOON_FOLK_NAMES=(
+	[1]="Wolf Moon"
+	[2]="Snow Moon"
+	[3]="Worm Moon"
+	[4]="Pink Moon"
+	[5]="Flower Moon"
+	[6]="Strawberry Moon"
+	[7]="Buck Moon"
+	[8]="Sturgeon Moon"
+	[9]="Harvest Moon"   # Approximation: strictly the full moon nearest the autumn equinox
+	[10]="Hunter's Moon"
+	[11]="Beaver Moon"
+	[12]="Cold Moon"
+)
+
 get_lunar_apsidal_syzygy() {
 	local moon_data="$1"
 	local moonrise_epoch="${2:-0}"
@@ -1086,15 +1110,32 @@ get_lunar_apsidal_syzygy() {
 	is_supermoon=$(awk -v d="$distance_km" 'BEGIN { print (d <= 367600) ? "true" : "false" }')
 	is_micromoon=$(awk -v d="$distance_km" 'BEGIN { print (d >= 401000) ? "true" : "false" }')
 
+	# ── Resolve apsidal label ──────────────────────────────────────────────────
+	local apsidal_label=""
 	if [[ "$is_supermoon" == "true" ]]; then
 		if [[ "$phase" == "New Moon" ]]; then
-			echo "Super New Moon"
+			apsidal_label="Super New Moon"
 		else
-			echo "Supermoon"
+			apsidal_label="Supermoon"
 		fi
 	elif [[ "$is_micromoon" == "true" ]]; then
-		echo "Micromoon"
+		apsidal_label="Micromoon"
 	fi
+
+	[[ -n "$apsidal_label" ]] || return 0
+
+	# ── Prepend folk name for Full Moon if enabled ─────────────────────────────
+	if [[ "$SHOW_FULL_MOON_FOLK_NAME" == "true" && "$phase" == "Full Moon" ]]; then
+		local month
+		month=$(date -d "@$moonrise_epoch" +"%m" 2>/dev/null | sed 's/^0//')
+		local folk_name="${FULL_MOON_FOLK_NAMES[$month]}"
+		if [[ -n "$folk_name" ]]; then
+			echo "${folk_name} · ${apsidal_label}"
+			return 0
+		fi
+	fi
+
+	echo "$apsidal_label"
 }
 
 #######################################
