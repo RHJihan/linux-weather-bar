@@ -98,6 +98,7 @@ load_or_create_config
 : "${SHOW_MOONPHASE_BILINGUAL:=false}"
 : "${SHOW_APSIDAL_MOON_EVENTS:=true}"
 : "${SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS:=false}"
+: "${SHOW_FULL_MOON_FOLK_NAME:=true}"
 
 # ─── Validate Required Credentials ────────────────────────────────────────────
 if [[ -z "${MOON_API_KEY:-}" ]] && [[ "${MOON_PHASE_ENABLED}" == "true" ]]; then
@@ -898,29 +899,38 @@ resolve_phase_index() {
 #   SHOW_MOONPHASE_BENGALI   - true → Bengali only
 #   SHOW_MOONPHASE_BILINGUAL - true → English + Bengali (overrides BENGALI)
 #   MOON_PHASE_EMOJIS, MOON_PHASE_NAMES, MOON_PHASE_NAMES_BN
+#   SHOW_FULL_MOON_FOLK_NAME - true → replace "Full Moon" with folk name
 # Arguments:
 #   $1 - Phase index (0-7)
 #   $2 - Apsidal syzygy label (optional, e.g. "Supermoon", "Micromoon")
 #        When provided and non-empty, appended as "(label)" after the phase name.
 #        In bilingual mode it is always appended in English after the Bengali name.
+#   $3 - Moonrise epoch (optional, 0 if unknown; used for folk name lookup)
 # Outputs:
-#   English:    "🌕  Full Moon"          or  "🌕  Full Moon (Supermoon)"
+#   English:    "🌕  Flower Moon"          or  "🌕  Flower Moon (Supermoon)"
 #   Bengali:    "🌕  পূর্ণিমা"           or  "🌕  পূর্ণিমা (Supermoon)"
-#   Bilingual:  "🌕  Full Moon (পূর্ণিমা)" or  "🌕  Full Moon (পূর্ণিমা) (Supermoon)"
+#   Bilingual:  "🌕  Flower Moon (পূর্ণিমা)" or  "🌕  Flower Moon (পূর্ণিমা) (Supermoon)"
 # Returns:
 #   0 always
 #######################################
 get_moon_phase() {
 	local phase_index="$1"
 	local syzygy_label="${2:-}"
+	local moonrise_epoch="${3:-0}"
+
+	# For Full Moon (phase_index == 4), resolve the English label using folk name if applicable
+	local english_label="${MOON_PHASE_NAMES[$phase_index]}"
+	if (( phase_index == 4 && moonrise_epoch > 0 )); then
+		english_label=$(resolve_full_moon_label "Full Moon" "$moonrise_epoch")
+	fi
 
 	local base
 	if [[ "$SHOW_MOONPHASE_BILINGUAL" == "true" ]]; then
-		base="${MOON_PHASE_EMOJIS[phase_index]}  ${MOON_PHASE_NAMES[phase_index]} (${MOON_PHASE_NAMES_BN[phase_index]})"
+		base="${MOON_PHASE_EMOJIS[$phase_index]}  ${english_label} (${MOON_PHASE_NAMES_BN[$phase_index]})"
 	elif [[ "$SHOW_MOONPHASE_BENGALI" == "true" ]]; then
-		base="${MOON_PHASE_EMOJIS[phase_index]}  ${MOON_PHASE_NAMES_BN[phase_index]}"
+		base="${MOON_PHASE_EMOJIS[$phase_index]}  ${MOON_PHASE_NAMES_BN[$phase_index]}"
 	else
-		base="${MOON_PHASE_EMOJIS[phase_index]}  ${MOON_PHASE_NAMES[phase_index]}"
+		base="${MOON_PHASE_EMOJIS[$phase_index]}  ${english_label}"
 	fi
 
 	if [[ -n "$syzygy_label" ]]; then
@@ -1038,11 +1048,9 @@ is_moon_visible_at_night() {
 # effective_sunrise]. This will typically suppress Super New Moon labels
 # since New Moons are near-solar and always have near-zero illumination.
 #
-# When SHOW_FULL_MOON_FOLK_NAME is true, Full Moon labels are prefixed with
-# the traditional Algonquin/Farmer's Almanac folk name for that month,
-# e.g. "Flower Moon · Micromoon" instead of just "Micromoon".
-# Note: September uses a fixed "Harvest Moon" label regardless of whether
-# it is the closest full moon to the autumn equinox.
+# NOTE: Folk moon names (Flower Moon, Wolf Moon, etc.) are handled separately
+# by resolve_full_moon_label() and are INDEPENDENT of apsidal events.
+# This function returns ONLY the apsidal label.
 #
 # Arguments:
 #   $1 - Moon data JSON string
@@ -1051,9 +1059,9 @@ is_moon_visible_at_night() {
 #   $4 - effective_sunset_epoch  (yesterday's if overnight, today's otherwise)
 #   $5 - effective_sunrise_epoch (tomorrow's if past today's sunrise)
 # Outputs:
-#   Label string: "Super New Moon", "Supermoon", "Micromoon",
-#                 or "<Folk Name> · Supermoon" / "<Folk Name> · Micromoon"
-#                 when SHOW_FULL_MOON_FOLK_NAME is true.
+#   "Super New Moon" (supermoon during New Moon phase)
+#   "Supermoon"      (supermoon during Full Moon phase)
+#   "Micromoon"      (micromoon during either phase)
 #   Empty string if none applies, feature disabled, or visibility suppressed
 # Returns:
 #   0 always
@@ -1074,6 +1082,45 @@ declare -A FULL_MOON_FOLK_NAMES=(
 	[11]="Beaver Moon"
 	[12]="Cold Moon"
 )
+
+#######################################
+# Resolve the appropriate Full Moon label: either a traditional folk name
+# or the generic "Full Moon" label.
+#
+# This function is INDEPENDENT of apsidal events and SHOW_APSIDAL_MOON_EVENTS.
+# It returns the base label that should be used for Full Moon phases.
+#
+# Arguments:
+#   $1 - Phase name (e.g., "Full Moon", "New Moon", "Waxing Gibbous")
+#   $2 - Moonrise epoch (used to determine the month for folk name lookup)
+# Outputs:
+#   "Full Moon" (default)
+#   Traditional folk name (e.g., "Flower Moon") if SHOW_FULL_MOON_FOLK_NAME is true
+# Returns:
+#   0 always
+#######################################
+resolve_full_moon_label() {
+	local phase="$1"
+	local moonrise_epoch="${2:-0}"
+
+	# Only apply folk names to Full Moon phases
+	[[ "$phase" == "Full Moon" ]] || { echo "Full Moon"; return 0; }
+
+	# Check if folk name feature is enabled
+	[[ "$SHOW_FULL_MOON_FOLK_NAME" == "true" ]] || { echo "Full Moon"; return 0; }
+
+	# Extract month from moonrise epoch
+	local month
+	month=$(date -d "@$moonrise_epoch" +"%m" 2>/dev/null | sed 's/^0//')
+
+	# Look up folk name for this month
+	local folk_name="${FULL_MOON_FOLK_NAMES[$month]:-}"
+	if [[ -n "$folk_name" ]]; then
+		echo "$folk_name"
+	else
+		echo "Full Moon"
+	fi
+}
 
 get_lunar_apsidal_syzygy() {
 	local moon_data="$1"
@@ -1122,19 +1169,7 @@ get_lunar_apsidal_syzygy() {
 		apsidal_label="Micromoon"
 	fi
 
-	[[ -n "$apsidal_label" ]] || return 0
-
-	# ── Prepend folk name for Full Moon if enabled ─────────────────────────────
-	if [[ "$SHOW_FULL_MOON_FOLK_NAME" == "true" && "$phase" == "Full Moon" ]]; then
-		local month
-		month=$(date -d "@$moonrise_epoch" +"%m" 2>/dev/null | sed 's/^0//')
-		local folk_name="${FULL_MOON_FOLK_NAMES[$month]}"
-		if [[ -n "$folk_name" ]]; then
-			echo "${folk_name} · ${apsidal_label}"
-			return 0
-		fi
-	fi
-
+	# Return apsidal label (may be empty if no apsidal event detected)
 	echo "$apsidal_label"
 }
 
@@ -1470,7 +1505,7 @@ resolve_moon_phase() {
 			"$moonset_epoch" \
 			"$effective_sunset_epoch" \
 			"$effective_sunrise_epoch")
-		get_moon_phase "$phase_index" "$syzygy_label"
+		get_moon_phase "$phase_index" "$syzygy_label" "$moonrise_epoch"
 	fi
 }
 

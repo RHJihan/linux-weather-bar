@@ -118,6 +118,7 @@ DEPENDENCIES: dict[str, list[str]] = {
         "MOON_PHASE_WINDOW_START",
         "MOON_PHASE_WINDOW_DURATION",
         "MOON_DATA_CACHE_MAX_AGE",
+        "SHOW_FULL_MOON_FOLK_NAME",
         "SHOW_MOONPHASE_DURING_DAYTIME",
         "SUPPRESS_NOT_VISIBLE_MOONPHASE",
         "SHOW_MOON_PHASE_DURING_RAIN",
@@ -125,11 +126,9 @@ DEPENDENCIES: dict[str, list[str]] = {
         "SHOW_MOONPHASE_BENGALI",
         "SHOW_MOONPHASE_BILINGUAL",
         "SHOW_APSIDAL_MOON_EVENTS",
-        "SHOW_FULL_MOON_FOLK_NAME",
         "SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS",
     ],
     "SHOW_APSIDAL_MOON_EVENTS": [
-        "SHOW_FULL_MOON_FOLK_NAME",
         "SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS",
     ],
     "SHOW_MOONRISE_MOONSET": [
@@ -254,6 +253,10 @@ SCHEMA: list[VarSchema] = [
               "Display even when rain is in the forecast", readonly=True,
               group="Moon Phase"),
 
+    VarSchema("SHOW_FULL_MOON_FOLK_NAME",             "Show Full Moon Traditional Name",          VarType.BOOLEAN,
+              "Display the traditional or cultural name of the Full Moon (e.g., Snow Moon, Pink Moon)",
+              readonly=True, group="Moon Phase"),
+
     VarSchema("SHOW_MOONPHASE_BILINGUAL",           "Bilingual Phase Name",        VarType.BOOLEAN,
               "Show phase name in both English and Bengali", readonly=True,
               group="Moon Phase"),
@@ -263,10 +266,6 @@ SCHEMA: list[VarSchema] = [
 
     VarSchema("SHOW_APSIDAL_MOON_EVENTS",             "Apsidal Moon Events",          VarType.BOOLEAN,
               "Show supermoon, super new moon, or micromoon label when applicable",
-              readonly=True, group="Moon Phase"),
-
-    VarSchema("SHOW_FULL_MOON_FOLK_NAME",             "Show Full Moon Traditional Name",          VarType.BOOLEAN,
-              "Display the traditional or cultural name of the Full Moon",
               readonly=True, group="Moon Phase"),
 
     VarSchema("SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS", "Suppress Non-Visible Night Apsidal Moon Events", VarType.BOOLEAN,
