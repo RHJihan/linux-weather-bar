@@ -2458,8 +2458,82 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             else:
                 data["moonset"] = _build_epoch(year, month, day, moonset_raw)
 
-    def _call_moon_api(self) -> dict[str, Any]:
-        """Fetch moon data from astroapi.byhrast.com using values from the loaded config."""
+    @staticmethod
+    def _get_effective_lunar_window(moonrise_ep: int, moonset_ep: int) -> tuple[int, int]:
+        """
+        Mirror bash get_effective_lunar_window():
+        Returns (window_start, window_end) as Unix epochs.
+
+        • If both moonrise and moonset are known: use them directly.
+        • If moonset is 0 (no moonset / moon not visible tonight):
+          infer window_end as moonrise + 8 hours (conservative estimate).
+        • If moonrise is 0: return (0, 0) — no usable window.
+        """
+        if moonrise_ep <= 0:
+            return (0, 0)
+        if moonset_ep > 0:
+            return (moonrise_ep, moonset_ep)
+        # moonset unknown — infer 8-hour window from moonrise
+        inferred_end = moonrise_ep + 8 * 3600
+        return (moonrise_ep, inferred_end)
+
+    def _get_needed_date_for_moon_api(self) -> tuple[str, str]:
+        """
+        Determine which date to request from the Moon API, mirroring the bash
+        get_moon_data() logic:
+
+        • If we are currently inside an active lunar window from cached data
+          (moonset has not yet passed), keep the cached date — which may be
+          yesterday if the moon rose before midnight and hasn't set yet.
+        • Otherwise request today's date.
+
+        Returns (date_str, reason) where date_str is "DD/MM/YYYY" and reason
+        is a short human-readable explanation used in the UI toast.
+        """
+        now = int(datetime.now().timestamp())
+        today = datetime.now().strftime("%d/%m/%Y")
+
+        # Try to load the existing moon cache
+        moon_path = Path.home() / ".cache" / "weather" / "moon-data.json"
+        try:
+            cached = json.loads(moon_path.read_text(encoding="utf-8"))
+        except Exception:
+            return today, "today"
+
+        cached_date = str(cached.get("date", "")).strip()
+        if not cached_date:
+            return today, "today"
+
+        try:
+            cached_moonrise_ep = int(float(str(cached.get("moonrise", 0) or 0)))
+            cached_moonset_ep = int(float(str(cached.get("moonset", 0) or 0)))
+        except (ValueError, TypeError):
+            return today, "today"
+
+        _window_start, window_end = self._get_effective_lunar_window(
+            cached_moonrise_ep, cached_moonset_ep
+        )
+
+        # Active lunar window: the cached date's moon hasn't set yet
+        if window_end > 0 and window_end > now:
+            if cached_date != today:
+                return cached_date, f"yesterday ({cached_date}) — active lunar window"
+            return cached_date, "today (active lunar window)"
+
+        return today, "today"
+
+    def _call_moon_api(self, date_param: Optional[str] = None) -> dict[str, Any]:
+        """
+        Fetch moon data from astroapi.byhrast.com using values from the loaded config.
+
+        *date_param* is "DD/MM/YYYY".  When omitted, _get_needed_date_for_moon_api()
+        is called to determine the correct date (today or yesterday during an active
+        lunar window).
+
+        Handles moonrise=0 (moon not visible / no moonrise tonight) gracefully:
+        the field is kept as 0 rather than raising an error, and moonset is left
+        at whatever the API returns.
+        """
         def _get(key: str) -> str:
             entry = self._entries.get(key)
             if not entry:
@@ -2474,7 +2548,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         timezone_val = _get("TIMEZONE")
 
         now = datetime.now()
-        date_param = now.strftime("%d/%m/%Y")
+        if date_param is None:
+            date_param, _ = self._get_needed_date_for_moon_api()
         time_param = now.strftime("%H:%M")
 
         url = (
@@ -2495,6 +2570,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         if "moonrise" not in data:
             raise RuntimeError("Unexpected response: 'moonrise' field missing")
 
+        # moonrise can be 0 or "0" when the moon doesn't rise today (circumpolar
+        # or simply no rise on that calendar date).  Keep it as-is; callers and
+        # _inject_moon_epochs handle the zero case gracefully.
         data["retrieved_at"] = int(datetime.now().timestamp())
         self._inject_moon_epochs(data)
         return data
@@ -2508,9 +2586,13 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         btn.set_sensitive(False)
         btn.set_label("Updating…")
 
+        # Determine the needed date up-front on the main thread (fast — just
+        # reads the local cache file) so we can show it in the success toast.
+        needed_date, date_reason = self._get_needed_date_for_moon_api()
+
         def _worker() -> None:
             try:
-                data = self._call_moon_api()
+                data = self._call_moon_api(date_param=needed_date)
                 moon_path = Path.home() / ".cache" / "weather" / "moon-data.json"
                 moon_path.parent.mkdir(parents=True, exist_ok=True)
                 moon_path.write_text(
@@ -2525,7 +2607,11 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             btn.set_label("Update")
             btn.set_sensitive(True)
             # Live monitor detects file write and updates UI automatically
-            self._show_toast("Moon data updated successfully")
+            moonrise_ep = int(float(str(data.get("moonrise", 0) or 0)))
+            if moonrise_ep == 0:
+                self._show_toast(f"Moon data updated ({date_reason}) — no moonrise")
+            else:
+                self._show_toast(f"Moon data updated ({date_reason})")
             return False
 
         def _on_error(msg: str) -> bool:
