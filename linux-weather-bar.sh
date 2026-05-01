@@ -4,7 +4,7 @@
 # Fetches and displays current weather information from OpenWeatherMap API
 # and optionally shows moon phase during nighttime hours.
 #
-# FROM_CALLER - Set to "true" to output JSON response (default: false)
+# EMIT_JSON_OUTPUT - Set to "true" to output JSON response (default: false)
 #
 
 # Exit on error, undefined variables, and pipe failures
@@ -249,9 +249,11 @@ fetch_weather_data() {
     # Validate JSON
     echo "$response" | jq -e . >/dev/null 2>&1 || return 1
 
-    # Persist formatted response to cache file
-    mkdir -p "$(dirname "$WEATHER_DATA_FILE")"
-    echo "$response" | jq '.' > "$WEATHER_DATA_FILE"
+    # Persist formatted response to cache file (skip if called from another script)
+    if [[ "${DISABLE_CACHE_WRITE:-false}" != "true" ]]; then
+        mkdir -p "$(dirname "$WEATHER_DATA_FILE")"
+        echo "$response" | jq '.' > "$WEATHER_DATA_FILE"
+    fi
 
 	echo "$response"
 }
@@ -398,9 +400,11 @@ fetch_forecast_data() {
 
     echo "$response" | jq -e . >/dev/null 2>&1 || return 1
 
-    # Persist formatted response to cache file
-    mkdir -p "$(dirname "$FORECAST_DATA_FILE")"
-    echo "$response" | jq '.' > "$FORECAST_DATA_FILE"
+    # Persist formatted response to cache file (skip if called from another script)
+    if [[ "${DISABLE_CACHE_WRITE:-false}" != "true" ]]; then
+        mkdir -p "$(dirname "$FORECAST_DATA_FILE")"
+        echo "$response" | jq '.' > "$FORECAST_DATA_FILE"
+    fi
 
     echo "$response"
 }
@@ -650,8 +654,11 @@ _save_moon_cache() {
     local fetched_date
     fetched_date=$(jq -r '.date // ""' <<<"$data" 2>/dev/null)
     [[ "$fetched_date" == "$needed_date" ]] || return 0
-    mkdir -p "$(dirname "$MOON_DATA_FILE")"
-    printf '%s\n' "$data" | jq '.' > "$MOON_DATA_FILE"
+    # Skip saving if called from another script
+    if [[ "${DISABLE_CACHE_WRITE:-false}" != "true" ]]; then
+        mkdir -p "$(dirname "$MOON_DATA_FILE")"
+        printf '%s\n' "$data" | jq '.' > "$MOON_DATA_FILE"
+    fi
 }
 
 #######################################
@@ -1801,7 +1808,7 @@ main() {
 		"$effective_sunrise_epoch")
 
 	# Output based on caller mode
-	if [[ "${FROM_CALLER:-false}" == "true" ]]; then
+	if [[ "${EMIT_JSON_OUTPUT:-false}" == "true" ]]; then
 		echo "$weather_line"
 		echo "---END-WEATHER-LINE---"
 

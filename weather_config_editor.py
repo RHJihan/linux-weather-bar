@@ -1788,6 +1788,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # ── Weather output section ─────────────────────────────────────────
         self._weather_output_group: Optional[Adw.PreferencesGroup] = None
         self._weather_output_label: Optional[Gtk.Label] = None
+        # Pre-fetched script output: None = pending, str = ready
+        self._weather_output_cache: Optional[str] = None
 
         # ── Rain Forecast section ──────────────────────────────────────────
         self._rain_forecast_service = RainForecastService()
@@ -1803,14 +1805,51 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         # ── Live rain forecast monitoring ──────────────────────────────────
         self._rain_forecast_monitor = RainForecastMonitor()
-        self._rain_forecast_monitor.add_callback(
-            self._on_rain_forecast_updated)
+        self._rain_forecast_monitor.add_callback(self._on_rain_forecast_updated)
+
+        # ── Eagerly prime caches in background before UI is interactive ────
+        self._prime_caches()
 
         self._build_ui()
 
-        # Start monitoring when window is realized
         self.connect("realize", self._on_window_realized)
         self.connect("close-request", self._on_window_closed)
+
+    def _prime_caches(self) -> None:
+        """
+        Start background threads immediately during __init__ to pre-warm:
+          1. Weather script output  → self._weather_output_cache
+          2. Rain forecast cache    → RainForecastService internal cache
+
+        Both complete before or shortly after the window becomes interactive,
+        so the UI renders with data already available — no visible lag.
+        """
+        def _fetch_weather() -> None:
+            result = self._run_weather_script_for_output()
+            def _store(r: str) -> bool:
+                self._weather_output_cache = r
+                # If the label already exists (built while we were running),
+                # update it immediately.
+                if self._weather_output_label is not None:
+                    self._weather_output_label.set_label(
+                        self._format_weather_output(r))
+                return False
+            GLib.idle_add(_store, result)
+
+        def _fetch_rain() -> None:
+            # Warm the RainForecastService internal cache synchronously.
+            # _build_rain_forecast_content will call get_rain_forecasts()
+            # which returns from cache instantly with no file I/O.
+            try:
+                self._rain_forecast_service.get_rain_forecasts(
+                    threshold=self._rain_forecast_threshold_ui,
+                    lookahead=self._rain_forecast_lookahead_ui,
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=_fetch_weather, daemon=True).start()
+        threading.Thread(target=_fetch_rain, daemon=True).start()
 
     def _has_changes(self) -> bool:
         if not self._original_values:
@@ -2852,15 +2891,24 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
     def _run_weather_script_for_output(self) -> str:
         """Run the .sh script found next to this file, return its stdout or an error message."""
         script = self._find_weather_script()
+
         if not script:
             return "(linux-weather-bar.sh not found in script directory)"
+
         try:
+            env = os.environ.copy()
+
             result = subprocess.run(
-                ["bash", "-c", script],
-                capture_output=True, text=True, timeout=30
+                ["bash", script],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
             )
+
             output = result.stdout.strip()
             return output if output else "(no output)"
+
         except FileNotFoundError:
             return "(script not found)"
         except subprocess.TimeoutExpired:
@@ -2872,6 +2920,10 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         """
         Untitled row showing the live output of WEATHER_SCRIPT.
         Placed above the Configuration group; hidden during search.
+
+        Applies pre-fetched output from _prime_caches immediately if ready,
+        so no lag is visible. The idle callback in _prime_caches covers the
+        case where the thread finishes after this method runs.
         """
         group = Adw.PreferencesGroup()
         # No title — intentionally blank
@@ -2889,12 +2941,21 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         output_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         output_label.set_xalign(0.0)
         output_label.set_lines(-1)
-        output_label.set_use_markup(True)  # <-- here
+        output_label.set_use_markup(True)
         output_label.set_margin_start(16)
         output_label.set_margin_end(8)
         output_label.set_margin_top(12)
         output_label.set_margin_bottom(12)
+        # Reserve a stable minimum height equivalent to three lines of text so
+        # the row does not flicker or jump when the async output populates.
+        # 3 lines × ~20 px line-height + 24 px top/bottom margin = 84 px.
+        output_label.set_size_request(-1, 84)
         self._weather_output_label = output_label
+
+        # Apply pre-fetched result immediately if the background thread beat us here.
+        if self._weather_output_cache is not None:
+            output_label.set_label(
+                self._format_weather_output(self._weather_output_cache))
 
         # Update button — inline at the end of the row
         update_btn = Gtk.Button(label="Refresh")
@@ -2911,16 +2972,15 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
             def _worker() -> None:
                 output = self._run_weather_script_for_output()
+                def _apply(o: str) -> bool:
+                    self._weather_output_cache = o
+                    if self._weather_output_label:
+                        self._weather_output_label.set_label(
+                            self._format_weather_output(o))
+                    btn.set_label("Update")
+                    btn.set_sensitive(True)
+                    return False
                 GLib.idle_add(_apply, output)
-
-            def _apply(output: str) -> bool:
-                if self._weather_output_label:
-                    self._weather_output_label.set_label(
-                        self._format_weather_output(output)
-                    )
-                btn.set_label("Update")
-                btn.set_sensitive(True)
-                return False
 
             threading.Thread(target=_worker, daemon=True).start()
 
@@ -2934,20 +2994,6 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         row.set_child(row_box)
         group.add(row)
-
-        # Populate asynchronously so UI shows immediately
-        def _initial_worker() -> None:
-            output = self._run_weather_script_for_output()
-            GLib.idle_add(_initial_apply, output)
-
-        def _initial_apply(output: str) -> bool:
-            if self._weather_output_label:
-                self._weather_output_label.set_label(
-                    self._format_weather_output(output)
-                )
-            return False
-
-        threading.Thread(target=_initial_worker, daemon=True).start()
 
         self._weather_output_group = group
         return group
@@ -3697,19 +3743,19 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
             self._show_toast("Configuration saved successfully")
 
-            # Refresh the weather output row with fresh script output
+            # Refresh weather output asynchronously after save.
             if self._weather_output_label is not None:
                 lbl = self._weather_output_label
 
-                def _refresh_output() -> None:
+                def _worker() -> None:
                     output = self._run_weather_script_for_output()
-                    GLib.idle_add(
-                        lambda: lbl.set_label(
-                            self._format_weather_output(output)
-                        ) or False
-                    )
+                    def _apply(o: str) -> bool:
+                        self._weather_output_cache = o
+                        lbl.set_label(self._format_weather_output(o))
+                        return False
+                    GLib.idle_add(_apply, output)
 
-                threading.Thread(target=_refresh_output, daemon=True).start()
+                threading.Thread(target=_worker, daemon=True).start()
 
             # Advance the baseline so Save deactivates, but keep undo stack
             # intact so the user can still undo changes made before saving.
