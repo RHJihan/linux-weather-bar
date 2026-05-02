@@ -454,6 +454,18 @@ GSETTINGS_SCHEMA_DIR=. python weather_config_editor.py
 
 A `.desktop` entry is included for GNOME application launcher integration. Place it in `~/.local/share/applications/`.
 
+### Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/rain-forecast-panel.png" width="400">
+  <img src="docs/screenshots/moon-data-panel.png" width="400">
+  <img src="docs/screenshots/moonrise-moonset.png" width="400">
+  <img src="docs/screenshots/moon-phase.png" width="400">
+  <img src="docs/screenshots/api-location.png" width="400">
+</p>
+
+---
+
 ### Key Features
 
 - Schema-driven UI: auto-generated from a typed variable registry supporting `string`, `integer`, `float`, `boolean`, `enum`, and `NUMERIC_OR_SENTINEL` types (fields that accept either a number or a symbolic value such as `moonrise`, `moonset`, or `sunset`)
