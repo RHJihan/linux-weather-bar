@@ -398,7 +398,7 @@ If the forecast rain event is more than 24 hours in the future, the display incl
 | Moonrise or moonset is `"Not visible"`     | Time field stored as epoch `0`; inferred lunar window used where applicable  |
 | `format_time` fails                        | Falls back to the string `"soon"` in rain warning context                    |
 | `sun-data.json` absent during overnight    | Sunset estimated as `today's sunrise − 12 hours`                             |
-| `date` command variant (GNU vs BSD)        | Both are tried with a `||` fallback in `format_time` and `hhmm_to_epoch`     |
+| `date` command variant (GNU vs BSD)        | Both are tried with a `\|\|` fallback in `format_time` and `hhmm_to_epoch`     |
 
 The script runs with `set -euo pipefail`. Functions that may fail use `|| true` or `|| return 1` at call sites to prevent unintended exits in non-critical paths.
 
