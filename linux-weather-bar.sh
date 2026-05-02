@@ -1240,7 +1240,10 @@ resolve_window_start() {
 # Arguments:
 #   $1 - MOON_PHASE_WINDOW_DURATION value (number or "moonset")
 #   $2 - window_start epoch
-#   $3 - moonset_epoch (0 if unavailable)
+#   $3 - lunar_window_end: an inferred-or-actual moonset epoch, never zero.
+#        Callers must guarantee this via get_effective_lunar_window →
+#        infer_lunar_window_bounds before invoking this function.
+#        Midnight fallback is NOT this function's responsibility.
 #   $4 - sunrise_epoch (0 if unavailable; used to enforce solar ceiling)
 # Outputs:
 #   Window end epoch
@@ -1250,14 +1253,7 @@ resolve_window_end() {
 	local end
 
 	if [[ "$param" == "moonset" ]]; then
-		if (( moonset > 0 )); then
-			end="$moonset"
-		else
-			local midnight
-			midnight=$(date -d "tomorrow 00:00:00" +%s 2>/dev/null || \
-			           date -v+1d -v0H -v0M -v0S +%s 2>/dev/null)
-			end=$(( midnight - 1 ))
-		fi
+		end="$moonset"
 	else
 		end=$(( window_start + ${param:-60} * 60 ))
 	fi
