@@ -923,12 +923,12 @@ resolve_phase_index() {
 get_moon_phase() {
 	local phase_index="$1"
 	local syzygy_label="${2:-}"
-	local moonrise_epoch="${3:-0}"
+	local moon_data="${3:-}"
 
-	# For Full Moon (phase_index == 4), resolve the English label using folk name if applicable
+	# For Full Moon (phase_index == 4), resolve the English label using folk name if applicable.
 	local english_label="${MOON_PHASE_NAMES[$phase_index]}"
-	if (( phase_index == 4 && moonrise_epoch > 0 )); then
-		english_label=$(resolve_full_moon_label "Full Moon" "$moonrise_epoch")
+	if (( phase_index == 4 )); then
+		english_label=$(resolve_full_moon_label "Full Moon" "$moon_data")
 	fi
 
 	local base
@@ -1097,9 +1097,12 @@ declare -A FULL_MOON_FOLK_NAMES=(
 # This function is INDEPENDENT of apsidal events and SHOW_APSIDAL_MOON_EVENTS.
 # It returns the base label that should be used for Full Moon phases.
 #
+# Month is extracted solely from the .date field (DD/MM/YYYY) in moon_data —
+# the canonical API date, always present regardless of moonrise/moonset values.
+#
 # Arguments:
 #   $1 - Phase name (e.g., "Full Moon", "New Moon", "Waxing Gibbous")
-#   $2 - Moonrise epoch (used to determine the month for folk name lookup)
+#   $2 - Moon data JSON string
 # Outputs:
 #   "Full Moon" (default)
 #   Traditional folk name (e.g., "Flower Moon") if SHOW_FULL_MOON_FOLK_NAME is true
@@ -1108,7 +1111,7 @@ declare -A FULL_MOON_FOLK_NAMES=(
 #######################################
 resolve_full_moon_label() {
 	local phase="$1"
-	local moonrise_epoch="${2:-0}"
+	local moon_data="${2:-}"
 
 	# Only apply folk names to Full Moon phases
 	[[ "$phase" == "Full Moon" ]] || { echo "Full Moon"; return 0; }
@@ -1116,9 +1119,12 @@ resolve_full_moon_label() {
 	# Check if folk name feature is enabled
 	[[ "$SHOW_FULL_MOON_FOLK_NAME" == "true" ]] || { echo "Full Moon"; return 0; }
 
-	# Extract month from moonrise epoch
-	local month
-	month=$(date -d "@$moonrise_epoch" +"%m" 2>/dev/null | sed 's/^0//')
+	# Extract month from .date field (DD/MM/YYYY)
+	local api_date month=""
+	api_date=$(jq -r '.date // ""' <<<"$moon_data" 2>/dev/null)
+	if [[ "$api_date" =~ ^[0-9]{2}/([0-9]{2})/[0-9]{4}$ ]]; then
+		month="${BASH_REMATCH[1]#0}"   # strip leading zero (e.g. "05" → "5")
+	fi
 
 	# Look up folk name for this month
 	local folk_name="${FULL_MOON_FOLK_NAMES[$month]:-}"
@@ -1508,7 +1514,7 @@ resolve_moon_phase() {
 			"$moonset_epoch" \
 			"$effective_sunset_epoch" \
 			"$effective_sunrise_epoch")
-		get_moon_phase "$phase_index" "$syzygy_label" "$moonrise_epoch"
+		get_moon_phase "$phase_index" "$syzygy_label" "$moon_data"
 	fi
 }
 
