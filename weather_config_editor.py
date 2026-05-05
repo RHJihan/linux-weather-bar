@@ -42,7 +42,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 
 # ─── Data Model ──────────────────────────────────────────────────────────────
@@ -1939,9 +1939,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._banner.set_revealed(True)
         self._main_box.append(self._banner)
 
-        # _path_label is assigned later by _build_weather_output_section
-        # so that the path appears inside the weather output group.
-        self._path_label: Optional[Gtk.Label] = None
+        # _path_link is assigned later by _build_preferences
+        # so that the path appears below the weather output group.
+        self._path_link: Optional[Gtk.Label] = None
 
         # Groups container
         self._groups_box = Gtk.Box(
@@ -3548,20 +3548,11 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                     self._weather_output_group = self._build_weather_output_section()
                     self._groups_box.append(self._weather_output_group)
 
-                    # Plain path label directly under the group, no row wrapper
+                    # Clickable hyperlink — opens the config directory in the file manager
                     config_path_str = str(self._config_path) if self._config_path else "No file loaded"
-                    path_label = Gtk.Label(label=config_path_str)
-                    path_label.set_halign(Gtk.Align.START)
-                    path_label.set_hexpand(True)
-                    path_label.set_wrap(True)
-                    path_label.set_xalign(0.0)
-                    path_label.set_margin_start(4)
-                    path_label.set_margin_top(2)
-                    path_label.set_margin_bottom(4)
-                    path_label.add_css_class("caption")
-                    path_label.add_css_class("dim-label")
-                    self._groups_box.append(path_label)
-                    self._path_label = path_label
+                    path_link = self._build_config_path_link(config_path_str)
+                    self._groups_box.append(path_link)
+                    self._path_link = path_link
 
                 self._groups_box.append(group)
                 self._group_widgets[group_name] = (group, rows)
@@ -3793,7 +3784,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 if master_key in self._entries:
                     self._update_dependent_states(master_key)
 
-            self._path_label.set_label(str(path))
+            if self._path_link is not None:
+                self._path_link.set_label(str(path))
+                self._path_link.set_tooltip_text(f"Open file: {path}")
             self._banner.set_revealed(False)
 
             # Persist last opened file
@@ -3932,6 +3925,62 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             group_widget.set_visible(group_visible)
 
     # ── Notifications ─────────────────────────────────────────────────────────
+
+    # ── Config Path Link ──────────────────────────────────────────────────────
+
+    def _build_config_path_link(self, label_text: str) -> Gtk.Label:
+        """
+        Build a plain label that looks identical to the original caption/dim-label
+        but shows a pointer cursor on hover and opens the config directory when
+        clicked.  No colour, underline, or positional changes — only the cursor
+        signals interactivity.
+        """
+        lbl = Gtk.Label(label=label_text)
+        lbl.set_halign(Gtk.Align.START)
+        lbl.set_hexpand(True)
+        lbl.set_wrap(True)
+        lbl.set_xalign(0.0)
+        lbl.set_margin_start(4)
+        lbl.set_margin_top(2)
+        lbl.set_margin_bottom(4)
+        lbl.add_css_class("caption")
+        lbl.add_css_class("dim-label")
+
+        has_path = label_text != "No file loaded"
+        if has_path:
+            lbl.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+            lbl.set_tooltip_text(f"Open file: {label_text}")
+
+            gesture = Gtk.GestureClick.new()
+            gesture.connect("released", self._on_path_link_activated)
+            lbl.add_controller(gesture)
+
+        return lbl
+
+    def _on_path_link_activated(self, _gesture: Gtk.GestureClick, _n: int, _x: float, _y: float) -> None:
+        """GestureClick handler: open the config file with its default application."""
+        if self._config_path is not None:
+            self._open_config_dir(self._config_path)
+
+    def _open_config_dir(self, path: Path) -> None:
+        """
+        Open *path* with its default application using xdg-open.
+
+        Runs in a daemon thread so the UI is never blocked.
+        Errors are surfaced via the standard error dialog rather than
+        crashing silently.
+        """
+        def _worker() -> None:
+            try:
+                subprocess.run(
+                    ["xdg-open", str(path)],
+                    check=True,
+                    timeout=10,
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                GLib.idle_add(self._show_error, f"Could not open file manager:\n{exc}")
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _show_toast(self, message: str) -> None:
         """Show a transient toast notification."""
