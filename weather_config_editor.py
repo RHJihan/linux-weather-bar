@@ -1777,6 +1777,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # for in-place Moon Data refresh
         self._moon_value_labels: dict[str, Gtk.Label] = {}
         self._moon_data_group: Optional[Adw.PreferencesGroup] = None
+        self._moon_data_path: Path = Path.home() / ".cache" / "weather" / "moon-data.json"
+        self._moon_retrieved_label: Optional[Gtk.Label] = None
         self._sun_data_group: Optional[Adw.PreferencesGroup] = None
 
         # ── Live moon data monitoring ──────────────────────────────────────
@@ -2670,9 +2672,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             else:
                 self._moon_alert_row.set_visible(False)
 
-        # Also refresh the group description with the new retrieved_at timestamp
-        if self._moon_data_group:
-            self._moon_data_group.set_description(
+        # Also refresh the retrieved label with the new retrieved_at timestamp
+        if self._moon_retrieved_label is not None:
+            self._moon_retrieved_label.set_label(
                 self._moon_retrieved_description(data))
 
     def _build_moon_data_section(self, preloaded_data: Optional[dict[str, Any]] = None) -> Adw.PreferencesGroup:
@@ -2720,7 +2722,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
                 group.add(main_row)
                 return group
 
-        group.set_description(self._moon_retrieved_description(data))
+        retrieved_text = self._moon_retrieved_description(data)
+        retrieved_lbl = self._build_moon_retrieved_link(retrieved_text)
+        self._moon_retrieved_label = retrieved_lbl
 
         outer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         outer_box.set_hexpand(True)
@@ -3571,6 +3575,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             if group_name == "Sunrise &amp; Sunset":
                 self._moon_data_group = self._build_moon_data_section()
                 self._groups_box.append(self._moon_data_group)
+                if self._moon_retrieved_label is not None:
+                    self._groups_box.append(self._moon_retrieved_label)
 
         # ── Apply dependency states AFTER UI is built ──────────────────────
         for master_key, dependent_keys in DEPENDENCIES.items():
@@ -3667,20 +3673,20 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # because _build_moon_data_section returned early), tear down the
         # placeholder group and rebuild it so the data grid is created.
         if data and not self._moon_value_labels and self._moon_data_group is not None:
-            # Pass the already-validated data dict so _build_moon_data_section
-            # does not re-read the file (avoids a race with mid-write CHANGED events).
             moon_phase_tuple = self._group_widgets.get("Moon Phase")
             sibling = moon_phase_tuple[0] if moon_phase_tuple else None
+            # Remove old group and its retrieved label
             self._groups_box.remove(self._moon_data_group)
-            self._moon_data_group = self._build_moon_data_section(
-                preloaded_data=data)
-            # Re-insert at the correct position (immediately after Moon Phase group),
-            # not at the end -- append() would push it below Network / API Keys / etc.
+            if self._moon_retrieved_label is not None:
+                self._groups_box.remove(self._moon_retrieved_label)
+            self._moon_data_group = self._build_moon_data_section(preloaded_data=data)
             if sibling is not None:
-                self._groups_box.insert_child_after(
-                    self._moon_data_group, sibling)
+                self._groups_box.insert_child_after(self._moon_data_group, sibling)
             else:
                 self._groups_box.append(self._moon_data_group)
+            if self._moon_retrieved_label is not None:
+                self._groups_box.insert_child_after(
+                    self._moon_retrieved_label, self._moon_data_group)
             return
 
         if not data or not self._moon_value_labels:
@@ -3729,9 +3735,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             else:
                 self._moon_alert_row.set_visible(False)
 
-        # Refresh the group description with the new retrieved_at timestamp
-        if self._moon_data_group:
-            self._moon_data_group.set_description(
+        # Refresh the retrieved label with the new retrieved_at timestamp
+        if self._moon_retrieved_label is not None:
+            self._moon_retrieved_label.set_label(
                 self._moon_retrieved_description(data))
 
     def _on_rain_forecast_updated(self, data: dict[str, Any]) -> None:
@@ -3928,12 +3934,22 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
     # ── Config Path Link ──────────────────────────────────────────────────────
 
-    def _build_config_path_link(self, label_text: str) -> Gtk.Label:
+    # ── Shared clickable-label factory ────────────────────────────────────────
+
+    @staticmethod
+    def _build_clickable_file_label(label_text: str, target_path: Optional[Path],
+                                    on_click: Callable) -> Gtk.Label:
         """
-        Build a plain label that looks identical to the original caption/dim-label
-        but shows a pointer cursor on hover and opens the config directory when
-        clicked.  No colour, underline, or positional changes — only the cursor
-        signals interactivity.
+        Build a plain caption/dim-label that shows a pointer cursor and calls
+        *on_click* when clicked.  Visually identical to a regular label —
+        no colour, underline, or position changes.
+
+        Parameters
+        ----------
+        label_text  : Text to display.
+        target_path : File that will be opened; if None the label is inert.
+        on_click    : GestureClick ``released`` callback
+                      ``(gesture, n_press, x, y) -> None``.
         """
         lbl = Gtk.Label(label=label_text)
         lbl.set_halign(Gtk.Align.START)
@@ -3946,39 +3962,47 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         lbl.add_css_class("caption")
         lbl.add_css_class("dim-label")
 
-        has_path = label_text != "No file loaded"
-        if has_path:
+        if target_path is not None:
             lbl.set_cursor(Gdk.Cursor.new_from_name("pointer"))
-            lbl.set_tooltip_text(f"Open file: {label_text}")
-
+            lbl.set_tooltip_text(f"Open file: {target_path}")
             gesture = Gtk.GestureClick.new()
-            gesture.connect("released", self._on_path_link_activated)
+            gesture.connect("released", on_click)
             lbl.add_controller(gesture)
 
         return lbl
 
-    def _on_path_link_activated(self, _gesture: Gtk.GestureClick, _n: int, _x: float, _y: float) -> None:
-        """GestureClick handler: open the config file with its default application."""
-        if self._config_path is not None:
-            self._open_config_dir(self._config_path)
+    def _build_config_path_link(self, label_text: str) -> Gtk.Label:
+        """Clickable label for the config file path."""
+        target = self._config_path if label_text != "No file loaded" else None
+        return self._build_clickable_file_label(label_text, target,
+                                                self._on_path_link_activated)
 
-    def _open_config_dir(self, path: Path) -> None:
+    def _on_path_link_activated(self, _gesture: Gtk.GestureClick, _n: int, _x: float, _y: float) -> None:
+        """Open the config file."""
+        if self._config_path is not None:
+            self._open_file(self._config_path)
+
+    def _build_moon_retrieved_link(self, label_text: str) -> Gtk.Label:
+        """Clickable label for the moon-data retrieved timestamp."""
+        return self._build_clickable_file_label(label_text, self._moon_data_path,
+                                                self._on_moon_retrieved_link_activated)
+
+    def _on_moon_retrieved_link_activated(self, _gesture: Gtk.GestureClick, _n: int, _x: float, _y: float) -> None:
+        """Open moon-data.json."""
+        self._open_file(self._moon_data_path)
+
+    def _open_file(self, path: Path) -> None:
         """
         Open *path* with its default application using xdg-open.
 
         Runs in a daemon thread so the UI is never blocked.
-        Errors are surfaced via the standard error dialog rather than
-        crashing silently.
+        Errors are surfaced via the standard error dialog.
         """
         def _worker() -> None:
             try:
-                subprocess.run(
-                    ["xdg-open", str(path)],
-                    check=True,
-                    timeout=10,
-                )
+                subprocess.run(["xdg-open", str(path)], check=True, timeout=10)
             except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
-                GLib.idle_add(self._show_error, f"Could not open file manager:\n{exc}")
+                GLib.idle_add(self._show_error, f"Could not open file:\n{exc}")
 
         threading.Thread(target=_worker, daemon=True).start()
 
