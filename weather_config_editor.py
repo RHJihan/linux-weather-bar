@@ -1097,6 +1097,23 @@ class RainForecastMonitor(FileDataMonitor):
             self._file_monitor = None
 
 
+# ─── Weather Data Live Monitor (extends generic FileDataMonitor) ─────────────
+
+
+class WeatherDataMonitor(FileDataMonitor):
+    """
+    Watches ~/.cache/weather/weather-data.json for changes AND fires a
+    1-second timeout so sunrise/sunset dim state updates as time passes.
+
+    Extends FileDataMonitor — file watching + periodic callback dispatch
+    are fully delegated to the parent (DRY principle).
+    """
+
+    def get_file_path(self) -> Path:
+        """Return path to weather-data.json."""
+        return Path.home() / ".cache" / "weather" / "weather-data.json"
+
+
 # ─── Row Widgets ─────────────────────────────────────────────────────────────
 
 
@@ -1780,10 +1797,16 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._moon_data_path: Path = Path.home() / ".cache" / "weather" / "moon-data.json"
         self._moon_retrieved_label: Optional[Gtk.Label] = None
         self._sun_data_group: Optional[Adw.PreferencesGroup] = None
+        # label → epoch; populated by _build_sun_data_section for dim refresh
+        self._sun_dim_labels: dict[Gtk.Label, int] = {}
 
         # ── Live moon data monitoring ──────────────────────────────────────
         self._moon_monitor = MoonDataMonitor()
         self._moon_monitor.add_callback(self._on_moon_data_updated)
+
+        # ── Live weather/sun data monitoring ──────────────────────────────
+        self._weather_monitor = WeatherDataMonitor()
+        self._weather_monitor.add_callback(self._on_weather_data_updated)
         self._moon_alert_row: Optional[Gtk.Box] = None
         self._moon_alert_label: Optional[Gtk.Label] = None
 
@@ -2259,19 +2282,23 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         alerts: list[str] = []
 
         # ── Currently in moon window ───────────────────────────────────────────
-        # A moon window is defined as the period between moonrise and moonset.
-        # Epochs of zero (or missing) mean the data is unavailable — skip silently.
+        # Uses _get_effective_lunar_window so that a missing moonrise or moonset
+        # (epoch == 0) is handled via the same 12h 25m inference as the bash layer,
+        # rather than silently skipping the window check entirely.
         if include_window_progress:
             try:
                 moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
                 moonset_ep = int(float(moonset_str)) if moonset_str else 0
 
-                if moonrise_ep > 0 and moonset_ep > 0:
+                window_start, window_end = WeatherConfigWindow._get_effective_lunar_window(
+                    moonrise_ep, moonset_ep)
+
+                if window_start > 0 and window_end > 0:
                     now_ep = int(datetime.now().timestamp())
 
-                    if moonrise_ep <= now_ep <= moonset_ep:
-                        window_total = moonset_ep - moonrise_ep
-                        elapsed = now_ep - moonrise_ep
+                    if window_start <= now_ep <= window_end:
+                        window_total = window_end - window_start
+                        elapsed = now_ep - window_start
 
                         if window_total > 0:
                             percent = int((elapsed / window_total) * 100)
@@ -2283,14 +2310,32 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             except Exception:
                 pass  # malformed epoch — skip this check
 
+        # ── Parse moon epochs once — shared by folk-name, apsidal, not-visible ──
+        try:
+            moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
+        except (ValueError, TypeError):
+            moonrise_ep = 0
+        try:
+            moonset_ep = int(float(moonset_str)) if moonset_str else 0
+        except (ValueError, TypeError):
+            moonset_ep = 0
+
         # ── Folk name resolution (Full Moon only) ──────────────────────────────
+        # Derive the month from moonrise when available; fall back to the API
+        # response date field ("DD/MM/YYYY") so the folk name is shown even on
+        # nights where the moon doesn't rise (moonrise == 0).
         folk_label: Optional[str] = None
         if phase == "Full Moon":
             try:
-                moonrise_ep_for_name = int(float(moonrise_str)) if moonrise_str else 0
-                if moonrise_ep_for_name > 0:
-                    month = datetime.fromtimestamp(moonrise_ep_for_name).month
-                    folk_label = WeatherConfigWindow._get_full_moon_folk_name(month)
+                if moonrise_ep > 0:
+                    month = datetime.fromtimestamp(moonrise_ep).month
+                else:
+                    # moonrise == 0 (circumpolar / no rise tonight) — use the
+                    # date the API data was fetched for instead.
+                    date_str = str(data.get("date", "")).strip()  # "DD/MM/YYYY"
+                    d, m, y = date_str.split("/")
+                    month = int(m)
+                folk_label = WeatherConfigWindow._get_full_moon_folk_name(month)
             except Exception:
                 pass
 
@@ -2307,21 +2352,20 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             if phase == "New Moon":
                 alerts.append("🌑 Super New Moon")
             else:
-                alerts.append(f"🌕 {_apsidal_label('Supermoon')}")   # ← was bare "🌕 Supermoon"
+                alerts.append(f"🌕 {_apsidal_label('Supermoon')}")
 
         # ── Micromoon ──────────────────────────────────────────────────────────
         MICROMOON_THRESHOLD = 401_000
         if is_new_or_full and distance_km is not None and distance_km >= MICROMOON_THRESHOLD:
             _apsidal_fired = True
             if phase == "New Moon":
-                alerts.append("🌕 Micromoon")
+                alerts.append("🌑 Micro New Moon")
             else:
                 alerts.append(f"🌕 {_apsidal_label('Micromoon')}")
 
         # ── Standalone folk name (Full Moon, no apsidal event) ─────────────────
-        # If the current moon is a Full Moon with a folk name but no apsidal label
-        # was appended above, show the folk name on its own so it is never silenced
-        # by the absence of a supermoon / micromoon event.
+        # Show folk name on its own when there is no supermoon/micromoon label
+        # to prefix it to.
         if folk_label and not _apsidal_fired:
             alerts.append(f"🌕 {folk_label}")
 
@@ -2334,31 +2378,29 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         # Condition 2: moon's arc must NOT be entirely within the daytime window.
         #
-        # The moon is a pure day-moon (not visible at night) only when BOTH:
-        #   • moonrise >= sunrise  (rises after dark ends)
-        #   • moonset  <= sunset   (sets before dark begins)
+        # Uses _get_effective_lunar_window so that a missing moonrise or moonset
+        # (epoch == 0) is covered by the 12h 25m inference — the same logic the
+        # bash layer uses — rather than silently skipping the daytime-arc check.
+        #
+        # The moon is a pure day-moon (not visible at night) only when BOTH the
+        # inferred window_start >= sunrise AND window_end <= sunset.
         # If either end sticks into the night the moon is visible.
         #
-        # This covers both nightly windows with a single check:
-        #   – moonrise < sunrise  → was up during last night (pre-dawn visible)
-        #   – moonset  > sunset   → still up during tonight (post-dusk visible)
-        #
-        # Unknown epochs (0 / missing) → assume visible; don't suppress.
+        # Unknown sun epochs → assume visible; don't suppress.
         if not not_visible:
             try:
-                moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
-                moonset_ep = int(float(moonset_str)) if moonset_str else 0
+                window_start, window_end = WeatherConfigWindow._get_effective_lunar_window(
+                    moonrise_ep, moonset_ep)
 
-                if moonrise_ep > 0 and moonset_ep > 0:
+                if window_start > 0 and window_end > 0:
                     sun_data = WeatherConfigWindow._load_sun_data()
-                    sunset_ep, sunrise_ep = WeatherConfigWindow._get_sun_epochs(
-                        sun_data)
+                    sunset_ep, sunrise_ep = WeatherConfigWindow._get_sun_epochs(sun_data)
 
                     if sunset_ep is not None and sunrise_ep is not None:
-                        if moonrise_ep >= sunrise_ep and moonset_ep <= sunset_ep:
+                        if window_start >= sunrise_ep and window_end <= sunset_ep:
                             not_visible = True
                     # else: sun epochs unknown → assume visible
-                # else: moon epochs unknown → assume visible
+                # else: no usable window → assume visible
             except Exception:
                 pass  # malformed times – skip this check
 
@@ -2374,8 +2416,11 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         """
         Compute the current lunar window progress percentage (live, updates every second).
 
-        Returns a string like "Currently in lunar window (42%)" when the moon is
-        between moonrise and moonset, or None when outside the window.
+        Returns a string like "Currently in lunar window (42%)" when the current time
+        falls within the effective lunar window, or None when outside it.
+
+        Uses _get_effective_lunar_window so that a missing moonrise or moonset
+        (epoch == 0) is handled via the same 12h 25m inference as the bash layer.
 
         This is extracted from _compute_moon_alert to enable frequent updates
         without recomputing supermoons/micromoons/visibility checks.
@@ -2387,12 +2432,15 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             moonrise_ep = int(float(moonrise_str)) if moonrise_str else 0
             moonset_ep = int(float(moonset_str)) if moonset_str else 0
 
-            if moonrise_ep > 0 and moonset_ep > 0:
+            window_start, window_end = self._get_effective_lunar_window(
+                moonrise_ep, moonset_ep)
+
+            if window_start > 0 and window_end > 0:
                 now_ep = int(datetime.now().timestamp())
 
-                if moonrise_ep <= now_ep <= moonset_ep:
-                    window_total = moonset_ep - moonrise_ep
-                    elapsed = now_ep - moonrise_ep
+                if window_start <= now_ep <= window_end:
+                    window_total = window_end - window_start
+                    elapsed = now_ep - window_start
 
                     if window_total > 0:
                         # Clamp to 0–100
@@ -3203,6 +3251,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             grid.attach(val, 1, 0, 1, 1)
             return grid
 
+        # Clear previous sun dim-label references (section may be rebuilt)
+        self._sun_dim_labels.clear()
+
         sunrise_past = now_ts > sunrise_ep
         sunset_past = now_ts > sunset_ep
 
@@ -3217,6 +3268,15 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             self._format_sun_epoch(sunset_ep, tz_name),
             sunset_past
         )
+
+        # Register value labels for live dim refresh (keyed by epoch)
+        # _make_cell attaches val at grid position (1, 0) — retrieve it directly
+        sunrise_val: Gtk.Label = left_grid.get_child_at(1, 0)
+        sunset_val: Gtk.Label = right_grid.get_child_at(1, 0)
+        if sunrise_val is not None:
+            self._sun_dim_labels[sunrise_val] = sunrise_ep
+        if sunset_val is not None:
+            self._sun_dim_labels[sunset_val] = sunset_ep
 
         vsep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
         vsep.set_margin_start(24)
@@ -3617,8 +3677,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
     # ── Window Lifecycle & Data Updates ────────────────────────────────────
 
     def _on_window_realized(self, *_: Any) -> None:
-        """Start data monitoring (moon and rain forecast) when window is first shown."""
+        """Start data monitoring (moon, weather/sun, and rain forecast) when window is first shown."""
         self._moon_monitor.start_watching()
+        self._weather_monitor.start_watching()
         self._rain_forecast_monitor.start_watching()
 
     def _on_window_closed(self, *_: Any) -> bool:
@@ -3631,6 +3692,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         if not self._has_changes():
             # No unsaved data — stop monitors and let GTK destroy the window.
             self._moon_monitor.stop_watching()
+            self._weather_monitor.stop_watching()
             self._rain_forecast_monitor.stop_watching()
             return False
 
@@ -3683,8 +3745,34 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         if response == "discard":
             # User confirmed — stop monitors then destroy the window.
             self._moon_monitor.stop_watching()
+            self._weather_monitor.stop_watching()
             self._rain_forecast_monitor.stop_watching()
             self.destroy()
+
+    def _refresh_moon_dims(self, data: dict[str, Any]) -> None:
+        """
+        Update dim-label CSS on moonrise/moonset value labels based on current time.
+
+        Called every second by _on_moon_data_updated so dimming transitions
+        happen live — no file change required.
+        """
+        now_ts = int(datetime.now().timestamp())
+        moonrise_ep = int(float(data.get("moonrise", 0) or 0))
+        moonset_ep = int(float(data.get("moonset", 0) or 0))
+
+        _dim_rules: dict[str, tuple[bool]] = {
+            "moonrise": ((moonrise_ep == 0) or (moonrise_ep > 0 and now_ts > moonrise_ep),),
+            "moonset":  ((moonset_ep == 0)  or (moonset_ep  > 0 and now_ts > moonset_ep),),
+        }
+
+        for key, (should_dim,) in _dim_rules.items():
+            label = self._moon_value_labels.get(key)
+            if label is None:
+                continue
+            if should_dim:
+                label.add_css_class("dim-label")
+            else:
+                label.remove_css_class("dim-label")
 
     def _on_moon_data_updated(self, data: dict[str, Any]) -> None:
         """
@@ -3762,6 +3850,42 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         if self._moon_retrieved_label is not None:
             self._moon_retrieved_label.set_label(
                 self._moon_retrieved_description(data))
+
+        # Always refresh moonrise/moonset dim state (time-based, every second)
+        self._refresh_moon_dims(data)
+
+    def _refresh_sun_dims(self) -> None:
+        """
+        Update dim-label CSS on sunrise/sunset value labels based on current time.
+
+        Called every second by _on_weather_data_updated so dimming transitions
+        happen live — no file change required.
+        """
+        now_ts = int(datetime.now().timestamp())
+        for label, epoch in self._sun_dim_labels.items():
+            is_past = epoch > 0 and now_ts > epoch
+            if is_past:
+                label.add_css_class("dim-label")
+            else:
+                label.remove_css_class("dim-label")
+
+    def _on_weather_data_updated(self, data: dict[str, Any]) -> None:
+        """
+        Callback fired when weather-data.json changes (file reload) OR every
+        second (timeout).  Rebuilds the sun data section on file change;
+        refreshes dim state every tick regardless.
+        """
+        # Rebuild the whole section when file content changed (new epochs)
+        if data and self._sun_data_group is not None:
+            # Detect a content change by comparing the sunrise epoch we know
+            # against what the fresh data contains — if different, full rebuild.
+            new_sunrise = int(data.get("sys", {}).get("sunrise", 0) or 0)
+            old_epoch = next(iter(self._sun_dim_labels.values()), None) if self._sun_dim_labels else None
+            if old_epoch is None or new_sunrise != old_epoch:
+                self._rebuild_sun_data_section()
+
+        # Always refresh dim state (time-based, runs every second)
+        self._refresh_sun_dims()
 
     def _on_rain_forecast_updated(self, data: dict[str, Any]) -> None:
         """
