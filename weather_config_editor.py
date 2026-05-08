@@ -2435,8 +2435,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             return int(datetime(year, month, day, h, m).timestamp())
 
         api_date = str(data.get("date", "")).strip()
-        moonrise_raw = str(data.get("moonrise", "")).strip()
-        moonset_raw = str(data.get("moonset", "")).strip()
+        moonrise_raw = data.get("moonrise", "")
+        moonset_raw = data.get("moonset", "")
 
         ymd = _parse_date(api_date)
         if ymd is None:
@@ -2444,21 +2444,39 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         year, month, day = ymd
 
-        if not _HHMM_RE.match(moonrise_raw):
-            return  # already an epoch integer or unrecognised — leave untouched
+        def _parse_moon_epoch(raw: Any) -> Optional[int]:
+            if isinstance(raw, (int, float, Decimal)):
+                try:
+                    return int(raw)
+                except Exception:
+                    return None
 
-        moonrise_ep = _build_epoch(year, month, day, moonrise_raw)
-        data["moonrise"] = moonrise_ep
+            text = str(raw).strip()
+            if not text:
+                return 0
+            if _HHMM_RE.match(text):
+                return _build_epoch(year, month, day, text)
+            if text.lower() == "not visible":
+                return 0
+            try:
+                return int(float(text))
+            except Exception:
+                return None
 
-        if _HHMM_RE.match(moonset_raw):
-            # Midnight-crossing: if moonset time-of-day is earlier than moonrise,
-            # the moon sets on the next calendar day.
-            if _hhmm_to_mins(moonset_raw) < _hhmm_to_mins(moonrise_raw):
-                next_day = datetime(year, month, day) + timedelta(days=1)
-                data["moonset"] = _build_epoch(
-                    next_day.year, next_day.month, next_day.day, moonset_raw)
-            else:
-                data["moonset"] = _build_epoch(year, month, day, moonset_raw)
+        moonrise_ep = _parse_moon_epoch(moonrise_raw)
+        if moonrise_ep is not None:
+            data["moonrise"] = moonrise_ep
+
+        moonset_ep = _parse_moon_epoch(moonset_raw)
+        if moonset_ep is not None:
+            moonset_date = datetime(year, month, day)
+            if (_HHMM_RE.match(str(moonrise_raw).strip()) and
+                    _HHMM_RE.match(str(moonset_raw).strip())):
+                if _hhmm_to_mins(str(moonset_raw).strip()) < _hhmm_to_mins(str(moonrise_raw).strip()):
+                    moonset_date += timedelta(days=1)
+            data["moonset"] = _build_epoch(
+                moonset_date.year, moonset_date.month, moonset_date.day,
+                str(moonset_raw).strip()) if _HHMM_RE.match(str(moonset_raw).strip()) else moonset_ep
 
     @staticmethod
     def _get_effective_lunar_window(moonrise_ep: int, moonset_ep: int) -> tuple[int, int]:
@@ -2468,15 +2486,20 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         • If both moonrise and moonset are known: use them directly.
         • If moonset is 0 (no moonset / moon not visible tonight):
-          infer window_end as moonrise + 8 hours (conservative estimate).
-        • If moonrise is 0: return (0, 0) — no usable window.
+          infer window_end as moonrise + 12h 25m (conservative estimate).
+        • If moonrise is 0 but moonset is known: infer a 12h 25m window
+          ending at moonset.
+        • If both moonrise and moonset are 0: return (0, 0) — no usable window.
         """
         if moonrise_ep <= 0:
+            if moonset_ep > 0:
+                inferred_start = max(0, moonset_ep - 44700)
+                return (inferred_start, moonset_ep)
             return (0, 0)
         if moonset_ep > 0:
             return (moonrise_ep, moonset_ep)
-        # moonset unknown — infer 8-hour window from moonrise
-        inferred_end = moonrise_ep + 8 * 3600
+        # moonset unknown — infer 12h 25m window (44700 seconds)
+        inferred_end = moonrise_ep + 44700
         return (moonrise_ep, inferred_end)
 
     def _get_needed_date_for_moon_api(self) -> tuple[str, str]:
