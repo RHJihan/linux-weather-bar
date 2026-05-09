@@ -494,15 +494,45 @@ format_rain_warning() {
 }
 
 #######################################
+# Validate a moon-data JSON string for structural correctness.
+#
+# Checks:
+#   - Non-empty string
+#   - Parses as valid JSON
+#   - .moonrise is a JSON number (not a string, null, or other non-numeric value)
+#   - .moonset  is a JSON number (not a string, null, or other non-numeric value)
+#
+# Note: zero is accepted as a valid number (moon not visible today);
+# type("number") is the contract — downstream callers decide what to do
+# with the actual value.
+#
+# Arguments:
+#   $1 - JSON string to validate
+# Returns:
+#   0 (true)  if valid
+#   1 (false) if empty, unparseable, or moonrise/moonset are not numbers
+#######################################
+validate_moon_json() {
+	local json="$1"
+	[[ -n "$json" ]] || return 1
+	jq -e '
+		(.moonrise | type) == "number" and
+		(.moonset  | type) == "number"
+	' <<<"$json" >/dev/null 2>&1
+}
+
+#######################################
 # Load moon data cache from MOON_DATA_FILE.
 # Creates the cache directory and an empty JSON object if absent.
+# If the file exists but contains corrupt data (e.g. moonrise/moonset
+# are non-numeric), the file is reset to "{}" and a warning is emitted.
 #
 # Globals:
 #   MOON_DATA_FILE
 # Arguments:
 #   (none)
 # Outputs:
-#   Cached JSON string, or "{}" if file did not exist
+#   Cached JSON string, or "{}" if file did not exist or was corrupt
 # Returns:
 #   0 always
 #######################################
@@ -510,10 +540,28 @@ load_moon_cache() {
 	mkdir -p "$(dirname "$MOON_DATA_FILE")"
 	if [[ ! -f "$MOON_DATA_FILE" ]]; then
 		echo "{}" > "$MOON_DATA_FILE"
+		echo "{}"
+		return 0
 	fi
-	cat "$MOON_DATA_FILE"
-}
 
+	local cache
+	cache=$(cat "$MOON_DATA_FILE")
+
+	# Accept empty placeholder "{}" without running full field validation
+	if [[ "$cache" == "{}" ]]; then
+		echo "{}"
+		return 0
+	fi
+
+	if ! validate_moon_json "$cache"; then
+		# echo "Warning: moon-data.json is corrupt (moonrise/moonset must be numbers); resetting cache" >&2
+		echo "{}" > "$MOON_DATA_FILE"
+		echo "{}"
+		return 0
+	fi
+
+	echo "$cache"
+}
 
 # -----------------------------------------------------------------------------
 # call_moon_api
@@ -640,7 +688,8 @@ fetch_moon_data() {
 
 #######################################
 # Write validated moon data to cache file.
-# Only writes if the fetched date matches the needed date.
+# Only writes if the fetched date matches the needed date
+# and the JSON passes structural validation (moonrise/moonset are numbers).
 #
 # Arguments:
 #   $1 - fresh moon data JSON
@@ -654,6 +703,13 @@ _save_moon_cache() {
     local fetched_date
     fetched_date=$(jq -r '.date // ""' <<<"$data" 2>/dev/null)
     [[ "$fetched_date" == "$needed_date" ]] || return 0
+
+    # Refuse to persist structurally invalid data
+    if ! validate_moon_json "$data"; then
+        # echo "Warning: refusing to cache moon data — moonrise/moonset are not numbers" >&2
+        return 0
+    fi
+
     # Skip saving if called from another script
     if [[ "${DISABLE_CACHE_WRITE:-false}" != "true" ]]; then
         mkdir -p "$(dirname "$MOON_DATA_FILE")"
