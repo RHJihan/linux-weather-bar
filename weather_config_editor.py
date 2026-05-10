@@ -918,6 +918,145 @@ class Validator:
         return ""
 
 
+# ─── Undo Manager ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class UndoCommand:
+    """
+    A single reversible edit.
+
+    Stores the key, its value *before* the user changed it, and the value
+    *after* so the manager can walk the history precisely.
+    """
+    key: str
+    before: str          # raw_value before this edit
+    after: str           # raw_value after this edit
+
+    def is_noop(self) -> bool:
+        return self.before == self.after
+
+
+class UndoManager:
+    """
+    Centralised undo history following the Command pattern.
+
+    Design principles
+    -----------------
+    • Single responsibility: owns the stack and sensitivity state; nothing else.
+    • No GTK imports — the sensitivity callback decouples this from the UI.
+    • Push is idempotent for no-op edits (before == after are silently dropped).
+    • Sensitivity callback is called every time the stack depth changes so the
+      Undo button always reflects the true state.
+
+    Usage
+    -----
+    1. Call ``begin_edit(key, current_raw)`` when a field first becomes dirty.
+    2. Call ``commit(key, new_raw)`` when the value settles (field loses focus
+       or another field takes over).  Internally deduplicates against the top
+       of the stack so rapid identical commits are harmless.
+    3. Call ``undo(entries, rows)`` to pop and apply the most recent command.
+    4. Call ``clear()`` on file load / reset.
+    """
+
+    def __init__(self,
+                 on_sensitivity_changed: Callable[[bool], None]) -> None:
+        self._stack: list[UndoCommand] = []
+        self._on_sensitivity_changed = on_sensitivity_changed
+        # Maps key → raw_value captured when the user *started* editing that field.
+        # Cleared per-key after a commit or undo.
+        self._edit_origins: dict[str, str] = {}
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def begin_edit(self, key: str, current_raw: str) -> None:
+        """
+        Record the value of *key* at the moment the user starts editing it.
+        Safe to call multiple times — only the first call per edit session
+        (i.e. before the next commit) is honoured.
+        """
+        if key not in self._edit_origins:
+            self._edit_origins[key] = current_raw
+
+    def commit(self, key: str, new_raw: str) -> None:
+        """
+        Push an UndoCommand for *key* if the value actually changed since
+        ``begin_edit`` was called.  No-ops (before == after) are discarded.
+        Duplicate consecutive commits for the same key are collapsed so that
+        rapid widget signals (SpinButton keystroke + value-changed) don't
+        create redundant history entries.
+        """
+        before = self._edit_origins.get(key)
+        if before is None:
+            # begin_edit was never called — use top of stack as origin if available
+            before = new_raw  # fall back; effectively a no-op
+
+        cmd = UndoCommand(key=key, before=before, after=new_raw)
+        if cmd.is_noop():
+            return
+
+        # Collapse: if the top entry is for the same key, just update its 'after'.
+        # This handles continuous widget signals (SpinButton keystroke flood).
+        if self._stack and self._stack[-1].key == key:
+            self._stack[-1] = UndoCommand(
+                key=key, before=self._stack[-1].before, after=new_raw)
+            # Re-check for no-op after collapsing (user typed then deleted back)
+            if self._stack[-1].is_noop():
+                self._stack.pop()
+                # Treat this field as clean again
+                self._edit_origins.pop(key, None)
+                self._notify()
+                return
+        else:
+            self._stack.append(cmd)
+            # Once committed, clear origin so the next edit session starts fresh.
+            self._edit_origins.pop(key, None)
+
+        self._notify()
+
+    def undo(self,
+             entries: dict[str, "ConfigEntry"],
+             rows: dict[str, "BaseRow"]) -> Optional[str]:
+        """
+        Pop the top command and restore the entry's raw_value.
+        Returns the key that was reverted, or None if the stack was empty.
+        Clears the edit origin for the key so a fresh edit session starts.
+        """
+        if not self._stack:
+            return None
+
+        cmd = self._stack.pop()
+        self._edit_origins.pop(cmd.key, None)
+
+        if cmd.key in entries:
+            entries[cmd.key].raw_value = cmd.before
+            entries[cmd.key].modified = False
+            if cmd.key in rows:
+                rows[cmd.key].reset()  # update the widget (signals blocked by caller)
+
+        self._notify()
+        return cmd.key
+
+    def clear(self) -> None:
+        """Reset history entirely (called on file load or full reset)."""
+        self._stack.clear()
+        self._edit_origins.clear()
+        self._notify()
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self._stack)
+
+    @property
+    def depth(self) -> int:
+        return len(self._stack)
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _notify(self) -> None:
+        self._on_sensitivity_changed(self.can_undo)
+
+
 # ─── Generic File Data Monitor Base Class ────────────────────────────────────
 
 
@@ -1788,9 +1927,14 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._entries: dict[str, ConfigEntry] = {}
         self._rows: dict[str, BaseRow] = {}
         self._search_text: str = ""
-        self._undo_stack: list[tuple[str, str]] = []   # (key, old_raw_value)
-        # key → raw_value at load time
+        # key → raw_value at load time (used only for Save-button dirty detection)
         self._original_values: dict[str, str] = {}
+        # Guards against undo triggering new undo-history entries via widget signals
+        self._undoing: bool = False
+        # Centralized undo manager — wired to the Undo button sensitivity
+        self._undo_manager = UndoManager(
+            on_sensitivity_changed=self._on_undo_sensitivity_changed
+        )
         # for in-place Moon Data refresh
         self._moon_value_labels: dict[str, Gtk.Label] = {}
         self._moon_data_group: Optional[Adw.PreferencesGroup] = None
@@ -1815,6 +1959,9 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._weather_output_label: Optional[Gtk.Label] = None
         # Pre-fetched script output: None = pending, str = ready
         self._weather_output_cache: Optional[str] = None
+
+        # ── GNOME Executor extension reload button (None when extension absent) ──
+        self._reload_executor_btn: Optional[Gtk.Button] = None
 
         # ── Rain Forecast section ──────────────────────────────────────────
         self._rain_forecast_service = RainForecastService()
@@ -1884,10 +2031,45 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             for key, entry in self._entries.items()
         )
 
+    _EXECUTOR_EXTENSION_ID = "executor@raujonas.github.io"
+
+    @staticmethod
+    def _executor_extension_is_installed() -> bool:
+        try:
+            installed = subprocess.run(
+                ["gnome-extensions", "list"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return any(
+                line.strip() == WeatherConfigWindow._EXECUTOR_EXTENSION_ID
+                for line in installed.stdout.splitlines()
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+
+    @classmethod
+    def _reload_executor_extension(cls) -> bool:
+        if not cls._executor_extension_is_installed():
+            return False
+        subprocess.run(
+            ["gnome-extensions", "disable", cls._EXECUTOR_EXTENSION_ID],
+            check=True,
+        )
+        subprocess.run(
+            ["gnome-extensions", "enable", cls._EXECUTOR_EXTENSION_ID],
+            check=True,
+        )
+        return True
+
+    def _on_undo_sensitivity_changed(self, can_undo: bool) -> None:
+        """Callback wired to UndoManager — keeps Undo button in sync with stack depth."""
+        self._undo_btn.set_sensitive(can_undo)
+
     def _update_button_states(self) -> None:
-        has_changes = self._has_changes()
-        self._save_btn.set_sensitive(has_changes)
-        self._undo_btn.set_sensitive(bool(self._undo_stack))
+        """Refresh Save button; Undo button is kept current by UndoManager callback."""
+        self._save_btn.set_sensitive(self._has_changes())
 
     # ── UI Construction ───────────────────────────────────────────────────────
 
@@ -1917,6 +2099,17 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._undo_btn.connect("clicked", self._on_undo_clicked)
         header.pack_start(self._undo_btn)
 
+        if self._executor_extension_is_installed():
+            self._reload_executor_btn = Gtk.Button(
+                icon_name="view-refresh-symbolic"
+            )
+            self._reload_executor_btn.set_tooltip_text(
+                "Reload GNOME Executor extension"
+            )
+            self._reload_executor_btn.connect(
+                "clicked", self._on_reload_executor_clicked)
+            header.pack_start(self._reload_executor_btn)
+
         # Save / Reset buttons
         self._save_btn = Gtk.Button(label="Save")
         self._save_btn.set_sensitive(False)  # initially disabled
@@ -1925,7 +2118,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         header.pack_end(self._save_btn)
 
-        reset_btn = Gtk.Button(icon_name="view-refresh-symbolic")
+        reset_btn = Gtk.Button(icon_name="document-revert-symbolic")
         reset_btn.set_tooltip_text("Reset all fields to loaded values")
         reset_btn.connect("clicked", self._on_reset_clicked)
 
@@ -3923,7 +4116,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         try:
             self._entries = self._parser.load(path)
             self._config_path = path
-            self._undo_stack.clear()
+            # Clear all undo history — new file means a fresh slate
+            self._undo_manager.clear()
             # Snapshot original values so we can detect "back to unchanged"
             self._original_values = {
                 k: e.raw_value for k, e in self._entries.items()}
@@ -3971,15 +4165,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
             self._parser.save(self._config_path, self._entries)
 
-            # Restart GNOME Executor extension
-            subprocess.run(
-                ["gnome-extensions", "disable", "executor@raujonas.github.io"],
-                check=True
-            )
-            subprocess.run(
-                ["gnome-extensions", "enable", "executor@raujonas.github.io"],
-                check=True
-            )
+            # Restart GNOME Executor extension only if installed.
+            self._reload_executor_extension()
 
             # Delete backup
             if backup.exists():
@@ -4013,6 +4200,13 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         except OSError as exc:
             self._show_error(f"Save failed:\n{exc}")
 
+    def _on_reload_executor_clicked(self, *_: Any) -> None:
+        try:
+            if self._reload_executor_extension():
+                self._show_toast("GNOME Executor extension reloaded")
+        except subprocess.CalledProcessError as exc:
+            self._show_error(f"Extension reload failed:\n{exc}")
+
     def _on_reset_clicked(self, *_: Any) -> None:
         if not self._config_path:
             return
@@ -4022,28 +4216,55 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
     # ── Undo ──────────────────────────────────────────────────────────────────
 
     def _on_entry_changed(self, entry: ConfigEntry) -> None:
+        """
+        Called by every row widget whenever its value changes.
+
+        Two-phase flow:
+          1. ``begin_edit`` records the value *before* this edit began (idempotent —
+             only the first call per field per session is stored).  We pass the
+             snapshot from ``_original_values`` so the pre-edit baseline is always
+             accurate, even when the widget has already mutated ``entry.raw_value``.
+          2. ``commit`` pushes (or collapses) an UndoCommand with the new value.
+
+        The ``_undoing`` guard prevents undo/reset from feeding back into history:
+        when ``reset()`` is called on a widget during undo, it fires widget signals
+        which reach here — but we skip both phases while undoing.
+        """
+        if self._undoing:
+            return  # Programmatic reset during undo must not create history entries
+
         key = entry.schema.key
 
-        # Push to undo stack only on first edit of this key in this session.
-        # We store the *original loaded* value so undo always reverts to it.
-        if not any(k == key for k, _ in self._undo_stack):
-            original = self._original_values.get(key, entry.raw_value)
-            self._undo_stack.append((key, original))
+        # Phase 1: capture the pre-edit baseline the first time this field is touched.
+        # Use _original_values (snapshot at file-load / last save) as the "before"
+        # so the value stored is always what was on disk, not the widget's current state.
+        pre_edit_value = self._original_values.get(key, entry.raw_value)
+        self._undo_manager.begin_edit(key, pre_edit_value)
+
+        # Phase 2: record the current (post-change) value into history
+        self._undo_manager.commit(key, entry.raw_value)
 
         self._update_dependent_states(key)
         self._update_button_states()
 
     def _on_undo_clicked(self, *_: Any) -> None:
-        if not self._undo_stack:
-            return
-        key, old_raw = self._undo_stack.pop()
-        if key in self._entries:
-            self._entries[key].raw_value = old_raw
-            self._entries[key].modified = False
-            if key in self._rows:
-                self._rows[key].reset()
-        self._undo_btn.set_sensitive(bool(self._undo_stack))
-        self._update_button_states()
+        """
+        Pop the most recent UndoCommand and restore its key's value.
+
+        The ``_undoing`` flag blocks ``_on_entry_changed`` while ``reset()``
+        replays the widget state, preventing the restoration from creating a
+        new forward-history entry (i.e., no recursive signal loops).
+        """
+        self._undoing = True
+        try:
+            reverted_key = self._undo_manager.undo(self._entries, self._rows)
+        finally:
+            self._undoing = False
+
+        if reverted_key is not None:
+            # Reapply dependency states for the reverted field
+            self._update_dependent_states(reverted_key)
+            self._update_button_states()
 
     # ── Search ────────────────────────────────────────────────────────────────
 
