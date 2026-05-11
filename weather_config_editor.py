@@ -1260,7 +1260,8 @@ class BaseRow(Adw.ActionRow):
     """Base preference row with label + description."""
 
     def __init__(self, entry: ConfigEntry,
-                 on_change: Callable[[ConfigEntry], None]) -> None:
+                 on_change: Callable[[ConfigEntry], None],
+                 info_content: "Optional[InfoContent]" = None) -> None:
         super().__init__()
         self.entry = entry
         self._on_change = on_change
@@ -1268,6 +1269,12 @@ class BaseRow(Adw.ActionRow):
         if entry.schema.description:
             self.set_subtitle(entry.schema.description)
         self.set_activatable(False)
+
+        # Add the info button NOW, before any subclass appends its control,
+        # so it appears to the left of the toggle/spin in the suffix area.
+        if info_content is not None:
+            info_btn = InfoButton.build(content=info_content, parent_row=self)
+            self.add_suffix(info_btn)
 
     def _notify_change(self) -> None:
         self._on_change(self.entry)
@@ -1277,8 +1284,9 @@ class StringRow(BaseRow):
     """Text-entry row for STRING variables."""
 
     def __init__(self, entry: ConfigEntry,
-                 on_change: Callable[[ConfigEntry], None]) -> None:
-        super().__init__(entry, on_change)
+                 on_change: Callable[[ConfigEntry], None],
+                 info_content: "Optional[InfoContent]" = None) -> None:
+        super().__init__(entry, on_change, info_content)
         self._is_secret = entry.schema.secret
         self._entry = Gtk.Entry()
         self._entry.set_text(entry.display_value)
@@ -1314,8 +1322,9 @@ class IntegerRow(BaseRow):
     """Spin-button row for INTEGER variables."""
 
     def __init__(self, entry: ConfigEntry,
-                 on_change: Callable[[ConfigEntry], None]) -> None:
-        super().__init__(entry, on_change)
+                 on_change: Callable[[ConfigEntry], None],
+                 info_content: "Optional[InfoContent]" = None) -> None:
+        super().__init__(entry, on_change, info_content)
         adj = Gtk.Adjustment(value=self._safe_int(),
                              lower=0, upper=99999,
                              step_increment=1, page_increment=10)
@@ -1350,8 +1359,9 @@ class FloatRow(BaseRow):
     """Spin-button row for FLOAT variables (e.g., Rain Probability)."""
 
     def __init__(self, entry: ConfigEntry,
-                 on_change: Callable[[ConfigEntry], None]) -> None:
-        super().__init__(entry, on_change)
+                 on_change: Callable[[ConfigEntry], None],
+                 info_content: "Optional[InfoContent]" = None) -> None:
+        super().__init__(entry, on_change, info_content)
 
         # Adjustment for 0.0 to 1.0 range
         adj = Gtk.Adjustment(value=self._safe_float(),
@@ -1408,8 +1418,9 @@ class BooleanRow(BaseRow):
     """Switch row for BOOLEAN variables."""
 
     def __init__(self, entry: ConfigEntry,
-                 on_change: Callable[[ConfigEntry], None]) -> None:
-        super().__init__(entry, on_change)
+                 on_change: Callable[[ConfigEntry], None],
+                 info_content: "Optional[InfoContent]" = None) -> None:
+        super().__init__(entry, on_change, info_content)
         self._switch = Gtk.Switch()
         self._switch.set_active(entry.display_value.lower() == "true")
         self._switch.set_valign(Gtk.Align.CENTER)
@@ -1429,8 +1440,9 @@ class EnumRow(BaseRow):
     """Dropdown row for ENUM variables."""
 
     def __init__(self, entry: ConfigEntry,
-                 on_change: Callable[[ConfigEntry], None]) -> None:
-        super().__init__(entry, on_change)
+                 on_change: Callable[[ConfigEntry], None],
+                 info_content: "Optional[InfoContent]" = None) -> None:
+        super().__init__(entry, on_change, info_content)
         choices = entry.schema.choices
         self._dropdown = Gtk.DropDown.new_from_strings(choices)
         cur = entry.display_value
@@ -1757,8 +1769,9 @@ class NumericOrSentinelRow(BaseRow):
     """
 
     def __init__(self, entry: ConfigEntry,
-                 on_change: Callable[[ConfigEntry], None]) -> None:
-        super().__init__(entry, on_change)
+                 on_change: Callable[[ConfigEntry], None],
+                 info_content: "Optional[InfoContent]" = None) -> None:
+        super().__init__(entry, on_change, info_content)
         schema = entry.schema
         cur = entry.display_value
 
@@ -1819,6 +1832,415 @@ class NumericOrSentinelRow(BaseRow):
             self._spin.set_value(self._safe_int(cur))
 
 
+# ─── Contextual Info System ──────────────────────────────────────────────────
+#
+# Architecture (SOLID + DRY):
+#   • InfoSection / InfoContent  — pure data layer (no GTK)
+#   • InfoDialogPresenter        — interaction layer (opens dialog, owns no state)
+#   • InfoButton                 — reusable UI factory (builds the button widget)
+#   • INFO_REGISTRY              — central lookup: schema key → InfoContent
+#
+# Adding a new info button requires only:
+#   1. Define an InfoContent entry in INFO_REGISTRY.
+#   2. The key automatically gets a button in make_row().
+
+
+@dataclass(frozen=True)
+class InfoSection:
+    """A titled section inside an info dialog."""
+    heading: str           # bold heading, e.g. "Perigee"
+    body: str              # plain-text explanation
+    note: str = ""         # optional clarifying note shown as a footnote in the grid
+
+
+@dataclass(frozen=True)
+class InfoContent:
+    """All content for one info dialog."""
+    dialog_title: str
+    intro: str                            # paragraph shown above sections
+    sections: tuple[InfoSection, ...]     # zero or more headed sub-sections
+    footnote: str = ""                    # italic note at the bottom
+
+
+# ── Content definitions ───────────────────────────────────────────────────────
+
+# Each entry: (month, moon_name, optional_note).
+# The Harvest Moon is unique — it is not fixed to September but is defined as
+# the full moon nearest the autumn equinox, which falls in October roughly
+# every three years.
+_FULL_MOON_NAMES: tuple[tuple[str, str, str], ...] = (
+    ("January",   "Wolf Moon",       ""),
+    ("February",  "Snow Moon",       ""),
+    ("March",     "Worm Moon",       ""),
+    ("April",     "Pink Moon",       ""),
+    ("May",       "Flower Moon",     ""),
+    ("June",      "Strawberry Moon", ""),
+    ("July",      "Buck Moon",       ""),
+    ("August",    "Sturgeon Moon",   ""),
+    ("September", "Harvest Moon",    (
+        "The Harvest Moon is the full moon nearest the autumn equinox "
+        "(around 22–23 September). It falls in October roughly every three "
+        "years, so \"September\" is an approximation for the typical case."
+    )),
+    ("October",   "Hunter's Moon",   ""),
+    ("November",  "Beaver Moon",     ""),
+    ("December",  "Cold Moon",       ""),
+)
+
+INFO_REGISTRY: dict[str, InfoContent] = {
+
+    "SHOW_FULL_MOON_FOLK_NAME": InfoContent(
+        dialog_title="Full Moon Traditional Names",
+        intro=(
+            "Each month's full moon carries a traditional name rooted in "
+            "Indigenous North American, Colonial American, and seasonal "
+            "folklore traditions. These names reflect the natural world "
+            "and the rhythms of life through the year."
+        ),
+        sections=tuple(
+            InfoSection(heading=month, body=name, note=note)
+            for month, name, note in _FULL_MOON_NAMES
+        ),
+        footnote=(
+            "These traditional names are cultural and historical designations "
+            "for recurring yearly full moons."
+        ),
+    ),
+
+    "SHOW_APSIDAL_MOON_EVENTS": InfoContent(
+        dialog_title="Apsidal Moon Events",
+        intro=(
+            "The Moon's orbit around Earth is elliptical, meaning its distance "
+            "from us changes throughout the month. An apsis is the point in an "
+            "orbit where the orbiting body is either closest to or farthest "
+            "from the body it orbits."
+        ),
+        sections=(
+            InfoSection(
+                heading="Perigee — Moon is closest to Earth",
+                body=(
+                    "At perigee the Moon is at the nearest point in its orbit. "
+                    "It can appear noticeably larger and brighter in the sky "
+                    "than at other times."
+                ),
+            ),
+            InfoSection(
+                heading="Apogee — Moon is farthest from Earth",
+                body=(
+                    "At apogee the Moon is at the farthest point in its orbit. "
+                    "It appears slightly smaller and dimmer than average."
+                ),
+            ),
+            InfoSection(
+                heading="Supermoon — Full moon near perigee",
+                body=(
+                    "When a full moon coincides with or occurs close to perigee, "
+                    "it is popularly called a Supermoon. It can appear up to "
+                    "14 % larger and 30 % brighter than a full moon at apogee."
+                ),
+            ),
+            InfoSection(
+                heading="Micromoon — Full moon near apogee",
+                body=(
+                    "When a full moon coincides with or occurs close to apogee, "
+                    "it is sometimes called a Micromoon. The difference in "
+                    "apparent size is subtle but measurable."
+                ),
+            ),
+        ),
+        footnote="",
+    ),
+}
+
+
+# ── Interaction layer ─────────────────────────────────────────────────────────
+
+
+class InfoDialogPresenter:
+    """
+    Opens a single, non-modal AdwDialog displaying InfoContent.
+
+    Design decisions
+    ────────────────
+    • Uses Adw.Dialog (GTK 4 / libadwaita 1.5+) with an Adw.ToolbarView so
+      the dialog gets a proper header bar and adaptive sizing for free.
+    • Falls back to a plain Gtk.Window on older runtimes that lack Adw.Dialog.
+    • The full-moon name grid renders months and moon names in two neat columns
+      instead of a long vertical list — a better use of horizontal space.
+    • All content is read-only; no interactive controls means no state to manage.
+    • Keyboard-navigable: Tab moves focus, Escape closes the dialog.
+    • Screen-reader friendly: labels carry the correct role automatically.
+    """
+
+    @staticmethod
+    def show(content: InfoContent, parent: Gtk.Widget) -> None:
+        """Present the info dialog as a child of *parent*'s root window."""
+        root = parent.get_root()
+        transient_for = root if isinstance(root, Gtk.Window) else None
+
+        # ── Build scrollable content ──────────────────────────────────────────
+        content_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        content_box.set_margin_top(20)
+        content_box.set_margin_bottom(20)
+        content_box.set_margin_start(20)
+        content_box.set_margin_end(20)
+
+        # Intro paragraph
+        intro_label = Gtk.Label(label=content.intro)
+        intro_label.set_wrap(True)
+        intro_label.set_xalign(0.0)
+        intro_label.set_halign(Gtk.Align.FILL)
+        content_box.append(intro_label)
+
+        # Sections — full-moon names get a 2-column grid; others get rows
+        if content.sections:
+            is_moon_names = all(
+                len(s.body.split()) <= 3 for s in content.sections
+            )
+            if is_moon_names:
+                InfoDialogPresenter._append_moon_name_grid(
+                    content_box, content.sections)
+            else:
+                for section in content.sections:
+                    InfoDialogPresenter._append_section_row(
+                        content_box, section)
+
+        # Footnote
+        if content.footnote:
+            note = Gtk.Label(label=content.footnote)
+            note.set_wrap(True)
+            note.set_xalign(0.0)
+            note.set_halign(Gtk.Align.FILL)
+            note.add_css_class("caption")
+            note.add_css_class("dim-label")
+            content_box.append(note)
+
+        # Derive a dialog height from the parent window so it fills ~90 % of
+        # the available vertical space regardless of how tall the window is.
+        # Adw.Dialog clamps itself to the screen anyway, so overshooting is safe.
+        DIALOG_HEIGHT_RATIO = 0.88  # slightly less than the main window
+        FALLBACK_HEIGHT = 760       # used when the window hasn't been allocated yet
+        win_height = FALLBACK_HEIGHT
+        if transient_for is not None:
+            h = transient_for.get_height()   # 0 before first map; use fallback then
+            if h > 0:
+                win_height = h
+        dialog_height = max(400, int(win_height * DIALOG_HEIGHT_RATIO))
+
+        # Wrap in a ScrolledWindow for small screens / long content.
+        # max_content_height is driven by the computed dialog height minus the
+        # header bar (~48 px) and content margins (40 px top+bottom).
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_propagate_natural_height(True)
+        scroll.set_max_content_height(dialog_height - 88)
+        scroll.set_child(content_box)
+        scroll.set_vexpand(True)
+
+        # ── Try Adw.Dialog (libadwaita ≥ 1.5), fall back to Gtk.Window ───────
+        try:
+            dialog = Adw.Dialog()
+            dialog.set_title(content.dialog_title)
+            dialog.set_content_width(420)
+            dialog.set_content_height(dialog_height)
+
+            toolbar_view = Adw.ToolbarView()
+            header_bar = Adw.HeaderBar()
+            header_bar.set_show_end_title_buttons(True)
+            toolbar_view.add_top_bar(header_bar)
+            toolbar_view.set_content(scroll)
+
+            dialog.set_child(toolbar_view)
+            if transient_for:
+                dialog.present(transient_for)
+            else:
+                dialog.present(parent)
+
+        except AttributeError:
+            # Adw.Dialog unavailable — use a plain modal window
+            win = Gtk.Window()
+            win.set_title(content.dialog_title)
+            win.set_default_size(420, dialog_height)
+            win.set_resizable(True)
+            if transient_for:
+                win.set_transient_for(transient_for)
+                win.set_modal(True)
+
+            outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            hdr = Gtk.HeaderBar()
+            outer.append(hdr)
+            outer.append(scroll)
+            win.set_child(outer)
+            win.present()
+
+    # ── Private helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _append_moon_name_grid(
+            parent: Gtk.Box,
+            sections: tuple[InfoSection, ...]) -> None:
+        """
+        Render full-moon names as a 6×2 grid inside a card-like frame.
+
+        Columns: Month (dim, right-aligned) | Moon Name (left-aligned).
+        Entries with a note get a superscript asterisk (*); the full note
+        text is collected and rendered as a caption below the card.
+        """
+        # Collect notes to render below the card, with their marker symbols.
+        # Using a list so multiple annotated entries are supported in future.
+        note_markers: list[tuple[str, str]] = []  # [(marker, note_text), …]
+        marker_for: dict[int, str] = {}           # section index → marker
+
+        note_symbols = ("¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹")  # supports up to 9 notes
+        for idx, section in enumerate(sections):
+            if section.note:
+                marker = note_symbols[len(note_markers)]
+                note_markers.append((marker, section.note))
+                marker_for[idx] = marker
+
+        # Outer card
+        card = Gtk.Frame()
+        card.add_css_class("card")
+        card.set_margin_top(4)
+
+        grid = Gtk.Grid()
+        grid.set_row_spacing(8)
+        grid.set_column_spacing(24)
+        grid.set_margin_top(12)
+        grid.set_margin_bottom(12)
+        grid.set_margin_start(16)
+        grid.set_margin_end(16)
+        grid.set_halign(Gtk.Align.CENTER)
+
+        half = len(sections) // 2  # split 12 months into 2 columns of 6
+
+        for col_pair in range(2):          # 0 = left half, 1 = right half
+            base = col_pair * half
+            for row_idx in range(half):
+                global_idx = base + row_idx
+                section = sections[global_idx]
+
+                month_lbl = Gtk.Label(label=section.heading)
+                month_lbl.set_xalign(1.0)
+                month_lbl.set_halign(Gtk.Align.END)
+                month_lbl.add_css_class("dim-label")
+
+                # Append marker to name when a note exists
+                display_name = section.body
+                if global_idx in marker_for:
+                    display_name = f"{section.body}{marker_for[global_idx]}"
+
+                name_lbl = Gtk.Label()
+                name_lbl.set_markup(GLib.markup_escape_text(display_name)
+                                    if global_idx not in marker_for
+                                    else (GLib.markup_escape_text(section.body)
+                                          + f"<sup>{marker_for[global_idx]}</sup>"))
+                name_lbl.set_xalign(0.0)
+                name_lbl.set_halign(Gtk.Align.START)
+
+                # Each column-pair occupies 2 grid columns (month + name)
+                grid_col = col_pair * 3  # gap column between pairs
+                grid.attach(month_lbl, grid_col,     row_idx, 1, 1)
+                grid.attach(name_lbl,  grid_col + 1, row_idx, 1, 1)
+
+                # Invisible spacer column between the two halves
+                if col_pair == 0:
+                    spacer = Gtk.Label(label=" ")
+                    grid.attach(spacer, 2, row_idx, 1, 1)
+
+        card.set_child(grid)
+        parent.append(card)
+
+        # Render collected notes below the card as wrapped caption labels
+        for marker, note_text in note_markers:
+            note_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            note_box.set_margin_top(6)
+
+            marker_lbl = Gtk.Label()
+            marker_lbl.set_markup(f"<sup>{GLib.markup_escape_text(marker)}</sup>")
+            marker_lbl.set_valign(Gtk.Align.START)
+            marker_lbl.set_margin_top(2)
+
+            text_lbl = Gtk.Label(label=note_text)
+            text_lbl.set_wrap(True)
+            text_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            text_lbl.set_xalign(0.0)
+            text_lbl.set_halign(Gtk.Align.FILL)
+            text_lbl.set_hexpand(True)
+            text_lbl.add_css_class("caption")
+            text_lbl.add_css_class("dim-label")
+
+            note_box.append(marker_lbl)
+            note_box.append(text_lbl)
+            parent.append(note_box)
+
+    @staticmethod
+    def _append_section_row(parent: Gtk.Box, section: InfoSection) -> None:
+        """Render one InfoSection as a bold heading + wrapped body paragraph."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+
+        heading = Gtk.Label()
+        heading.set_markup(
+            f"<b>{GLib.markup_escape_text(section.heading)}</b>")
+        heading.set_xalign(0.0)
+        heading.set_halign(Gtk.Align.FILL)
+        heading.set_wrap(True)
+
+        body = Gtk.Label(label=section.body)
+        body.set_xalign(0.0)
+        body.set_halign(Gtk.Align.FILL)
+        body.set_wrap(True)
+        body.add_css_class("dim-label")
+
+        box.append(heading)
+        box.append(body)
+        parent.append(box)
+
+
+# ── UI layer ──────────────────────────────────────────────────────────────────
+
+
+class InfoButton:
+    """
+    Reusable factory for the contextual info button (ⓘ icon, flat style).
+
+    Usage
+    ─────
+        btn = InfoButton.build(
+            content=INFO_REGISTRY["SHOW_FULL_MOON_FOLK_NAME"],
+            parent_row=row,
+        )
+        row.add_prefix(btn)          # or add_suffix — caller decides placement
+
+    The button is a small, flat Gtk.Button with the
+    ``dialog-information-symbolic`` icon.  It carries a "Learn more" tooltip
+    and an accessible label so screen readers announce it correctly.
+    Pressing it delegates to InfoDialogPresenter.show().
+    """
+
+    @staticmethod
+    def build(content: InfoContent, parent_row: Gtk.Widget) -> Gtk.Button:
+        """Return a configured info button bound to *content*."""
+        btn = Gtk.Button()
+        btn.set_icon_name("help-about-symbolic")
+        btn.set_tooltip_text("Learn more")
+        btn.set_valign(Gtk.Align.CENTER)
+        btn.add_css_class("flat")
+        btn.add_css_class("circular")
+        # Accessible label for screen readers
+        btn.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            [f"Learn more about {content.dialog_title}"],
+        )
+
+        def _on_clicked(_btn: Gtk.Button) -> None:
+            InfoDialogPresenter.show(content, parent_row)
+
+        btn.connect("clicked", _on_clicked)
+        return btn
+
+
 def make_row(entry: ConfigEntry,
              on_change: Callable[[ConfigEntry], None],
              location_store: Optional["LocationMappingStore"] = None,
@@ -1832,25 +2254,27 @@ def make_row(entry: ConfigEntry,
 
     vt = entry.schema.var_type
 
+    # Resolve info content once; passed into BaseRow.__init__ so the button
+    # is added to the suffix area BEFORE the subclass appends its control.
+    # This guarantees layout order:  [label …]  (i)  [toggle/spin/…]
+    info_content = INFO_REGISTRY.get(entry.schema.key)
+
     if vt == VarType.STRING:
-        return StringRow(entry, on_change)
+        row: BaseRow = StringRow(entry, on_change, info_content)
+    elif vt == VarType.INTEGER:
+        row = IntegerRow(entry, on_change, info_content)
+    elif vt == VarType.FLOAT:
+        row = FloatRow(entry, on_change, info_content)
+    elif vt == VarType.BOOLEAN:
+        row = BooleanRow(entry, on_change, info_content)
+    elif vt == VarType.ENUM:
+        row = EnumRow(entry, on_change, info_content)
+    elif vt == VarType.NUMERIC_OR_SENTINEL:
+        row = NumericOrSentinelRow(entry, on_change, info_content)
+    else:
+        raise ValueError(f"Unknown VarType: {vt}")
 
-    if vt == VarType.INTEGER:
-        return IntegerRow(entry, on_change)
-
-    if vt == VarType.FLOAT:
-        return FloatRow(entry, on_change)
-
-    if vt == VarType.BOOLEAN:
-        return BooleanRow(entry, on_change)
-
-    if vt == VarType.ENUM:
-        return EnumRow(entry, on_change)
-
-    if vt == VarType.NUMERIC_OR_SENTINEL:
-        return NumericOrSentinelRow(entry, on_change)
-
-    raise ValueError(f"Unknown VarType: {vt}")
+    return row
 
 
 # ─── Main Application Window ─────────────────────────────────────────────────
