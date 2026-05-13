@@ -45,6 +45,98 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 
+# ─── Network Connectivity ─────────────────────────────────────────────────────
+
+
+class NetworkConnectivityError(RuntimeError):
+    """Raised when the connectivity probe finds no network."""
+
+
+class NetworkConnectivityChecker:
+    """
+    Probes network connectivity before network-dependent operations.
+
+    A single probe is performed — no retries.
+
+    Strategy:
+      1. Prefer ``nmcli networking connectivity check`` when nmcli is available;
+         treat any nmcli failure as "none" so it never blocks the caller.
+      2. Fall back to a single ICMP ping to 8.8.8.8 when nmcli is absent.
+    """
+
+    _FALLBACK_HOST = "8.8.8.8"
+    _PING_TIMEOUT_SECONDS = 2
+
+    def __init__(self) -> None:
+        self._nmcli_available: Optional[bool] = None   # lazily resolved
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def check(self) -> bool:
+        """
+        Run a single connectivity probe.
+
+        Returns True when the network is reachable, False otherwise.
+        """
+        return self._probe()
+
+    def assert_connected(self) -> None:
+        """
+        Like :meth:`check`, but raises :class:`NetworkConnectivityError` on
+        failure instead of returning False.
+        """
+        if not self.check():
+            raise NetworkConnectivityError("No network connectivity.")
+
+    # ── Internals ─────────────────────────────────────────────────────────────
+
+    def _probe(self) -> bool:
+        """Single connectivity probe; delegates to nmcli or ping."""
+        if self._use_nmcli():
+            return self._probe_nmcli()
+        return self._probe_ping()
+
+    def _use_nmcli(self) -> bool:
+        """Resolve nmcli availability once and cache the result."""
+        if self._nmcli_available is None:
+            self._nmcli_available = shutil.which("nmcli") is not None
+        return self._nmcli_available
+
+    @staticmethod
+    def _probe_nmcli() -> bool:
+        """
+        Run ``nmcli networking connectivity check``.
+
+        Any execution failure (CalledProcessError, FileNotFoundError, timeout)
+        is caught and treated as "none" — mirroring the bash
+        ``connectivity=$(nmcli ...) || connectivity="none"`` pattern.
+        """
+        try:
+            result = subprocess.run(
+                ["nmcli", "networking", "connectivity", "check"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return result.stdout.strip() == "full"
+        except Exception:
+            return False
+
+    @classmethod
+    def _probe_ping(cls) -> bool:
+        """Fallback: single ICMP ping to a well-known public DNS server."""
+        try:
+            result = subprocess.run(
+                ["ping", "-c", "1", "-W", str(cls._PING_TIMEOUT_SECONDS),
+                 cls._FALLBACK_HOST],
+                capture_output=True,
+                timeout=cls._PING_TIMEOUT_SECONDS + 2,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+
 # ─── Data Model ──────────────────────────────────────────────────────────────
 
 
@@ -3267,50 +3359,106 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._inject_moon_epochs(data)
         return data
 
+    def _run_in_worker(
+        self,
+        btn: Gtk.Button,
+        busy_label: str,
+        idle_label: str,
+        work: Callable[[], None],
+    ) -> None:
+        """
+        Shared scaffolding for every network-dependent button action.
+
+        Responsibilities (each owned exactly once — SRP/DRY):
+          • Disable *btn* and show *busy_label* while work is in flight.
+          • Run a single :class:`NetworkConnectivityChecker` probe before
+            touching the network; surface failures via :meth:`_show_error`.
+          • Execute *work* on a daemon thread so the UI is never blocked.
+          • Re-enable *btn* with *idle_label* when the worker finishes
+            (success, network failure, or unexpected exception).
+
+        Parameters
+        ----------
+        btn:
+            The button that triggered the action; disabled for the duration.
+        busy_label:
+            Label shown on *btn* while the worker thread is running.
+        idle_label:
+            Label restored on *btn* after the worker finishes (any path).
+        work:
+            Callable executed on the worker thread **after** connectivity is
+            confirmed.  Receives no arguments.  Must schedule any UI updates
+            via ``GLib.idle_add``.  Exceptions propagate to the generic error
+            handler; callers that need finer error discrimination should catch
+            internally and call ``GLib.idle_add(self._show_error, …)``
+            themselves before returning normally.
+        """
+        btn.set_sensitive(False)
+        btn.set_label(busy_label)
+
+        def _restore_btn() -> bool:
+            btn.set_label(idle_label)
+            btn.set_sensitive(True)
+            return False
+
+        def _on_no_network(msg: str) -> bool:
+            _restore_btn()
+            self._show_error(msg)
+            return False
+
+        def _worker() -> None:
+            try:
+                NetworkConnectivityChecker().assert_connected()
+            except NetworkConnectivityError as exc:
+                GLib.idle_add(_on_no_network, str(exc))
+                return
+            try:
+                work()
+            except Exception as exc:
+                GLib.idle_add(_restore_btn)
+                GLib.idle_add(self._show_error, str(exc))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _on_moon_update_clicked(self, btn: Gtk.Button) -> None:
         if not self._entries:
             self._show_error(
                 "No config file loaded. Please open a config file first.")
             return
 
-        btn.set_sensitive(False)
-        btn.set_label("Updating…")
-
         # Determine the needed date up-front on the main thread (fast — just
         # reads the local cache file) so we can show it in the success toast.
         needed_date, date_reason = self._get_needed_date_for_moon_api()
 
-        def _worker() -> None:
-            try:
-                data = self._call_moon_api(date_param=needed_date)
-                moon_path = Path.home() / ".cache" / "weather" / "moon-data.json"
-                moon_path.parent.mkdir(parents=True, exist_ok=True)
-                moon_path.write_text(
-                    json.dumps(data, indent=2, default=str),
-                    encoding="utf-8"
-                )
-                GLib.idle_add(_on_success, data)
-            except Exception as exc:
-                GLib.idle_add(_on_error, str(exc))
+        def _work() -> None:
+            data = self._call_moon_api(date_param=needed_date)
+            moon_path = Path.home() / ".cache" / "weather" / "moon-data.json"
+            moon_path.parent.mkdir(parents=True, exist_ok=True)
+            moon_path.write_text(
+                json.dumps(data, indent=2, default=str),
+                encoding="utf-8"
+            )
+            # Live monitor detects file write and updates UI automatically.
+            # Button restore is handled by _run_in_worker on error;
+            # on success we restore it here alongside the toast.
+            def _on_success(d: dict[str, Any]) -> bool:
+                btn.set_label("Update")
+                btn.set_sensitive(True)
+                moonrise_ep = int(float(str(d.get("moonrise", 0) or 0)))
+                if moonrise_ep == 0:
+                    self._show_toast(
+                        f"Moon data updated ({date_reason}) — no moonrise")
+                else:
+                    self._show_toast(f"Moon data updated ({date_reason})")
+                return False
+            GLib.idle_add(_on_success, data)
 
-        def _on_success(data: dict[str, Any]) -> bool:
-            btn.set_label("Update")
-            btn.set_sensitive(True)
-            # Live monitor detects file write and updates UI automatically
-            moonrise_ep = int(float(str(data.get("moonrise", 0) or 0)))
-            if moonrise_ep == 0:
-                self._show_toast(f"Moon data updated ({date_reason}) — no moonrise")
-            else:
-                self._show_toast(f"Moon data updated ({date_reason})")
-            return False
-
-        def _on_error(msg: str) -> bool:
-            btn.set_label("Update")
-            btn.set_sensitive(True)
-            self._show_error(f"Moon API call failed:\n{msg}")
-            return False
-
-        threading.Thread(target=_worker, daemon=True).start()
+        self._run_in_worker(
+            btn,
+            busy_label="Updating…",
+            idle_label="Update",
+            work=_work,
+        )
 
     def _moon_retrieved_description(self, data: dict[str, Any]) -> str:
         """Build the Moon Data group description, appending a formatted retrieved_at timestamp."""
@@ -3598,31 +3746,22 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             self._show_error("linux-weather-bar.sh not found in the script directory.")
             return
 
-        btn.set_sensitive(False)
-        btn.set_label("Updating…")
+        def _work() -> None:
+            subprocess.run(["bash", "-c", script], check=True, timeout=30)
+            def _on_success() -> bool:
+                btn.set_label("Update")
+                btn.set_sensitive(True)
+                self._rebuild_sun_data_section()
+                self._show_toast("Weather data updated successfully")
+                return False
+            GLib.idle_add(_on_success)
 
-        def _worker() -> None:
-            try:
-                subprocess.run(["bash", "-c", script], check=True, timeout=30)
-                GLib.idle_add(_on_success)
-            except Exception as exc:
-                GLib.idle_add(_on_error, str(exc))
-
-        def _on_success() -> bool:
-            btn.set_label("Update")
-            btn.set_sensitive(True)
-            # Rebuild sun data section with fresh data
-            self._rebuild_sun_data_section()
-            self._show_toast("Weather data updated successfully")
-            return False
-
-        def _on_error(msg: str) -> bool:
-            btn.set_label("Update")
-            btn.set_sensitive(True)
-            self._show_error(f"Weather script failed:\n{msg}")
-            return False
-
-        threading.Thread(target=_worker, daemon=True).start()
+        self._run_in_worker(
+            btn,
+            busy_label="Updating…",
+            idle_label="Update",
+            work=_work,
+        )
 
     def _rebuild_sun_data_section(self) -> None:
         """Replace the sun data group in-place after a successful update."""
@@ -3757,22 +3896,24 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         update_btn.set_margin_bottom(6)
 
         def _on_update_clicked(btn: Gtk.Button) -> None:
-            btn.set_sensitive(False)
-            btn.set_label("Refreshing…")
-
-            def _worker() -> None:
+            def _work() -> None:
                 output = self._run_weather_script_for_output()
                 def _apply(o: str) -> bool:
+                    btn.set_label("Refresh")
+                    btn.set_sensitive(True)
                     self._weather_output_cache = o
                     if self._weather_output_label:
                         self._weather_output_label.set_label(
                             self._format_weather_output(o))
-                    btn.set_label("Update")
-                    btn.set_sensitive(True)
                     return False
                 GLib.idle_add(_apply, output)
 
-            threading.Thread(target=_worker, daemon=True).start()
+            self._run_in_worker(
+                btn,
+                busy_label="Refreshing…",
+                idle_label="Refresh",
+                work=_work,
+            )
 
         update_btn.connect("clicked", _on_update_clicked)
 
@@ -4065,31 +4206,23 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             self._show_error("linux-weather-bar.sh not found in the script directory.")
             return
 
-        btn.set_sensitive(False)
-        btn.set_label("Updating…")
+        def _work() -> None:
+            subprocess.run(["bash", "-c", script], check=True, timeout=30)
+            # File monitor detects the change and triggers _on_rain_forecast_updated
+            # which updates the UI automatically.
+            def _on_success() -> bool:
+                btn.set_label("Update")
+                btn.set_sensitive(True)
+                self._show_toast("Forecast data updated successfully")
+                return False
+            GLib.idle_add(_on_success)
 
-        def _worker() -> None:
-            try:
-                subprocess.run(["bash", "-c", script], check=True, timeout=30)
-                GLib.idle_add(_on_success)
-            except Exception as exc:
-                GLib.idle_add(_on_error, str(exc))
-
-        def _on_success() -> bool:
-            btn.set_label("Update")
-            btn.set_sensitive(True)
-            # File monitor will detect the file change and trigger _on_rain_forecast_updated
-            # which will update the UI automatically. No manual cache invalidation needed.
-            self._show_toast("Forecast data updated successfully")
-            return False
-
-        def _on_error(msg: str) -> bool:
-            btn.set_label("Update")
-            btn.set_sensitive(True)
-            self._show_error(f"Weather script failed:\n{msg}")
-            return False
-
-        threading.Thread(target=_worker, daemon=True).start()
+        self._run_in_worker(
+            btn,
+            busy_label="Updating…",
+            idle_label="Update",
+            work=_work,
+        )
 
     def _build_rain_forecast_section(self) -> Adw.PreferencesGroup:
         """
@@ -4805,15 +4938,24 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         self._toast_overlay.add_toast(toast)
 
     def _show_error(self, message: str) -> None:
-        dialog = Adw.MessageDialog(
-            transient_for=self,
-            heading="Error",
-            body=message,
-        )
-        dialog.add_response("ok", "OK")
-        dialog.set_default_response("ok")
-        dialog.connect("response", lambda d, _r: d.close())
-        dialog.present()
+        if hasattr(Adw, "AlertDialog"):
+            dialog = Adw.AlertDialog.new("Error", message)
+            dialog.add_response("ok", "OK")
+            dialog.set_default_response("ok")
+            dialog.set_close_response("ok")
+            dialog.connect("response", lambda d, _r: d.force_close())
+            dialog.present(self)
+        else:
+            # Fallback: Adw.MessageDialog (libadwaita < 1.2).
+            dialog = Adw.MessageDialog(
+                transient_for=self,
+                heading="Error",
+                body=message,
+            )
+            dialog.add_response("ok", "OK")
+            dialog.set_default_response("ok")
+            dialog.connect("response", lambda d, _r: d.close())
+            dialog.present()
 
 
 # ─── Application Entry Point ─────────────────────────────────────────────────
