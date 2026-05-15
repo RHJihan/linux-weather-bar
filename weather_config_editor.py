@@ -2011,7 +2011,7 @@ INFO_REGISTRY: dict[str, InfoContent] = {
         ),
         sections=(
             InfoSection(
-                heading="Perigee — Moon is closest to Earth",
+                heading="Perigee: Moon is closest to Earth",
                 body=(
                     "At perigee the Moon is at the nearest point in its orbit. "
                     "It can appear noticeably larger and brighter in the sky "
@@ -2019,14 +2019,14 @@ INFO_REGISTRY: dict[str, InfoContent] = {
                 ),
             ),
             InfoSection(
-                heading="Apogee — Moon is farthest from Earth",
+                heading="Apogee: Moon is farthest from Earth",
                 body=(
                     "At apogee the Moon is at the farthest point in its orbit. "
                     "It appears slightly smaller and dimmer than average."
                 ),
             ),
             InfoSection(
-                heading="Supermoon — Full moon near perigee",
+                heading="Supermoon: Full moon near perigee",
                 body=(
                     "When a full moon coincides with or occurs close to perigee, "
                     "it is popularly called a Supermoon. It can appear up to "
@@ -2034,7 +2034,7 @@ INFO_REGISTRY: dict[str, InfoContent] = {
                 ),
             ),
             InfoSection(
-                heading="Micromoon — Full moon near apogee",
+                heading="Micromoon: Full moon near apogee",
                 body=(
                     "When a full moon coincides with or occurs close to apogee, "
                     "it is sometimes called a Micromoon. The difference in "
