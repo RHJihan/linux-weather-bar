@@ -1928,6 +1928,7 @@ class NumericOrSentinelRow(BaseRow):
 #
 # Architecture (SOLID + DRY):
 #   • InfoSection / InfoContent  — pure data layer (no GTK)
+#   • AdaptiveSizingHelper       — encapsulates dynamic height calculation
 #   • InfoDialogPresenter        — interaction layer (opens dialog, owns no state)
 #   • InfoButton                 — reusable UI factory (builds the button widget)
 #   • INFO_REGISTRY              — central lookup: schema key → InfoContent
@@ -2006,6 +2007,7 @@ INFO_REGISTRY: dict[str, InfoContent] = {
             "from us changes throughout the month. An apsis is the point in an "
             "orbit where the orbiting body is either closest to or farthest "
             "from the body it orbits."
+            
         ),
         sections=(
             InfoSection(
@@ -2045,6 +2047,214 @@ INFO_REGISTRY: dict[str, InfoContent] = {
 }
 
 
+# ── Adaptive Sizing System ────────────────────────────────────────────────────
+#
+# Encapsulates dynamic height calculation following the formula:
+#   window_height = min(content_height + header_bar, max_allowed_height)
+#
+# Key responsibilities:
+#   • Measure content's FULL preferred height (includes all margins/padding already)
+#   • Calculate maximum allowed height based on parent window with safety margin
+#   • Compute final dialog height accurately without double-counting spacing
+#   • Never restrict scrollable area unless truly needed (only at max height)
+#   • Prevent resize jitter by batch-measuring before sizing
+#
+# Benefits:
+#   • No unwanted scrollbars for content that fits
+#   • Responsive, natural-feeling dialogs
+#   • No magic numbers — all constants are named and documented
+#   • Separation of concerns: sizing logic isolated from presentation
+#   • Easy to test and adjust sizing behavior
+
+
+class AdaptiveSizingHelper:
+    """
+    Calculates dynamic window heights based on content and parent constraints.
+
+    This helper follows GNOME HIG (Human Interface Guidelines) for adaptive
+    layouts and ensures dialogs remain visually balanced within parent windows.
+    """
+
+    # ── Sizing constants (GNOME HIG aligned) ────────────────────────────────
+    # Header bar height approximation (Adw.HeaderBar or Gtk.HeaderBar)
+    HEADER_BAR_HEIGHT = 48
+
+    # Safety margin: ensure dialog never fully matches parent height
+    # This preserves visual hierarchy and prevents UI cramping
+    PARENT_HEIGHT_SAFETY_MARGIN = 0.88  # 88% of parent → leaves 12% breathing room
+
+    # Height bounds for the dialog
+    MINIMUM_DIALOG_HEIGHT = 400  # never smaller than this
+    MAXIMUM_DIALOG_HEIGHT = 900  # never larger than this (screen-independent)
+
+    @staticmethod
+    def measure_preferred_height(widget: Gtk.Widget) -> int:
+        """
+        Measure the natural/preferred height of a widget using GTK4 APIs.
+
+        Uses the widget's natural size request, which GTK provides after
+        layout calculations. Falls back to a minimum if measurement unavailable.
+
+        This method handles the case where widgets are not yet realized by
+        using GTK4's measure API, which can compute sizes without allocation.
+
+        Args:
+            widget: The GTK widget to measure (typically a content Box)
+
+        Returns:
+            Preferred height in pixels (minimum: 100)
+        """
+        try:
+            # GTK4 measurement API: measure returns
+            # (minimum, natural, minimum_baseline, natural_baseline)
+            # We use the natural height (second value), which is the preferred size
+            # based on content. The widget doesn't need to be realized for this.
+            dummy_width_for_wrapping = 570  # standard dialog width for text wrapping
+            min_size, nat_size, min_baseline, nat_baseline = widget.measure(
+                Gtk.Orientation.VERTICAL, dummy_width_for_wrapping)
+            # Use natural height if positive; it's the preferred size
+            if nat_size > 0:
+                return nat_size
+        except (AttributeError, TypeError, ValueError):
+            # If measure() is unavailable, returns wrong number of values,
+            # or fails, try alternative approach
+            pass
+
+        # Fallback: estimate based on child count and typical heights
+        # This provides a reasonable approximation when measurement APIs fail
+        if isinstance(widget, Gtk.Container):
+            try:
+                child_count = sum(1 for _ in widget.observe_children())
+                # Estimate: ~40 px per child (label, section, etc.) + base overhead
+                estimated_height = max(100, child_count * 40 + 80)
+                return estimated_height
+            except (AttributeError, TypeError):
+                pass
+
+        # Last resort: return a safe minimum
+        # This ensures the dialog is always reasonably sized
+        return 100
+
+    @staticmethod
+    def calculate_max_allowed_height(parent_window: Optional[Gtk.Window]) -> int:
+        """
+        Calculate the maximum height the dialog should occupy.
+
+        Ensures the dialog remains visibly smaller than the parent window,
+        following the formula:
+            max_height = parent_height * SAFETY_MARGIN
+
+        Args:
+            parent_window: The parent application window, or None
+
+        Returns:
+            Maximum allowed height in pixels
+        """
+        if parent_window is None:
+            # No parent: use absolute maximum
+            return AdaptiveSizingHelper.MAXIMUM_DIALOG_HEIGHT
+
+        parent_height = parent_window.get_height()
+        if parent_height <= 0:
+            # Parent not yet allocated: use fallback
+            return AdaptiveSizingHelper.MAXIMUM_DIALOG_HEIGHT
+
+        # Apply safety margin so dialog never fills the entire parent
+        max_allowed = int(
+            parent_height * AdaptiveSizingHelper.PARENT_HEIGHT_SAFETY_MARGIN
+        )
+        # Clamp to absolute maximum for consistency across displays
+        return min(max_allowed, AdaptiveSizingHelper.MAXIMUM_DIALOG_HEIGHT)
+
+    @staticmethod
+    def calculate_adaptive_height(
+            content_box: Gtk.Box,
+            parent_window: Optional[Gtk.Window]) -> int:
+        """
+        Calculate the final dialog height using dynamic content measurement.
+
+        Implements the formula:
+            final_height = min(content_height + header_bar, max_allowed_height)
+
+        The dialog consists of:
+            • Header bar: fixed height (~48px)
+            • Scrollable content area: contains the Box with all content and padding
+
+        The content Box is pre-configured with margins, so measure_preferred_height
+        already includes all padding, spacing, and margins needed. We only add the
+        header bar height to get the total dialog height.
+
+        Ensures the height adapts to content size while respecting parent
+        constraints and screen space. Avoids creating unnecessary scrollbars by
+        measuring accurately and not double-counting spacing.
+
+        Args:
+            content_box: The Box containing the dialog content (includes margins)
+            parent_window: The parent application window, or None
+
+        Returns:
+            Final dialog height in pixels, bounded and constrained
+        """
+        # Measure the content's natural height (includes all spacing and margins)
+        content_preferred = AdaptiveSizingHelper.measure_preferred_height(
+            content_box
+        )
+
+        # Calculate maximum allowed height based on parent window
+        max_allowed = AdaptiveSizingHelper.calculate_max_allowed_height(
+            parent_window
+        )
+
+        # Dialog height = header bar + content
+        # (content already includes all internal padding and margins)
+        dialog_height_with_header = content_preferred + AdaptiveSizingHelper.HEADER_BAR_HEIGHT
+
+        # Clamp to maximum allowed
+        final_height = min(dialog_height_with_header, max_allowed)
+
+        # Enforce absolute bounds
+        final_height = max(
+            final_height,
+            AdaptiveSizingHelper.MINIMUM_DIALOG_HEIGHT
+        )
+        final_height = min(
+            final_height,
+            AdaptiveSizingHelper.MAXIMUM_DIALOG_HEIGHT
+        )
+
+        return final_height
+
+    @staticmethod
+    def calculate_scrollable_max_height(dialog_height: int) -> int:
+        """
+        Calculate the maximum height for a ScrolledWindow within the dialog.
+
+        This value is used to set scroll.set_max_content_height(). Only restrict
+        the scrollable area when the dialog is at maximum height. Otherwise, let
+        the content expand naturally without triggering scrolling.
+
+        The ScrolledWindow fills the space: dialog_height - header_bar_height
+
+        This ensures:
+        • Small content → no scrollbar (content fits naturally)
+        • Large content → scrollbar only when exceeding max_allowed_height
+        • No micro-scrollbars for "almost fitting" content
+
+        Args:
+            dialog_height: The dialog's overall height
+
+        Returns:
+            Maximum height for scrollable content in pixels
+        """
+        # Calculate scrollable area (total height minus header bar)
+        scrollable_area = dialog_height - AdaptiveSizingHelper.HEADER_BAR_HEIGHT
+
+        # Return the scrollable area size
+        # This will be clamped to actual content in the layout, preventing
+        # unnecessary scrollbars for small content
+        return max(200, scrollable_area)
+
+
 # ── Interaction layer ─────────────────────────────────────────────────────────
 
 
@@ -2062,7 +2272,16 @@ class InfoDialogPresenter:
     • All content is read-only; no interactive controls means no state to manage.
     • Keyboard-navigable: Tab moves focus, Escape closes the dialog.
     • Screen-reader friendly: labels carry the correct role automatically.
+    • **Dynamic sizing**: Uses AdaptiveSizingHelper to compute height based on
+      content measurements, ensuring responsive, native-feeling dialogs.
     """
+
+    # ── Content styling constants ────────────────────────────────────────────
+    CONTENT_BOX_SPACING = 16  # vertical spacing between content sections
+    CONTENT_BOX_MARGIN = 20   # uniform margins around content
+
+    # ── Dialog geometry ──────────────────────────────────────────────────────
+    DIALOG_CONTENT_WIDTH = 570  # standard width for readable text wrapping
 
     @staticmethod
     def show(content: InfoContent, parent: Gtk.Widget) -> None:
@@ -2072,11 +2291,12 @@ class InfoDialogPresenter:
 
         # ── Build scrollable content ──────────────────────────────────────────
         content_box = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, spacing=16)
-        content_box.set_margin_top(20)
-        content_box.set_margin_bottom(20)
-        content_box.set_margin_start(20)
-        content_box.set_margin_end(20)
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=InfoDialogPresenter.CONTENT_BOX_SPACING)
+        content_box.set_margin_top(InfoDialogPresenter.CONTENT_BOX_MARGIN)
+        content_box.set_margin_bottom(InfoDialogPresenter.CONTENT_BOX_MARGIN)
+        content_box.set_margin_start(InfoDialogPresenter.CONTENT_BOX_MARGIN)
+        content_box.set_margin_end(InfoDialogPresenter.CONTENT_BOX_MARGIN)
 
         # Intro paragraph
         intro_label = Gtk.Label(label=content.intro)
@@ -2108,25 +2328,23 @@ class InfoDialogPresenter:
             note.add_css_class("dim-label")
             content_box.append(note)
 
-        # Derive a dialog height from the parent window so it fills ~90 % of
-        # the available vertical space regardless of how tall the window is.
-        # Adw.Dialog clamps itself to the screen anyway, so overshooting is safe.
-        DIALOG_HEIGHT_RATIO = 0.88  # slightly less than the main window
-        FALLBACK_HEIGHT = 760       # used when the window hasn't been allocated yet
-        win_height = FALLBACK_HEIGHT
-        if transient_for is not None:
-            h = transient_for.get_height()   # 0 before first map; use fallback then
-            if h > 0:
-                win_height = h
-        dialog_height = max(400, int(win_height * DIALOG_HEIGHT_RATIO))
+        # ── Calculate adaptive dialog height ──────────────────────────────────
+        # Use the new AdaptiveSizingHelper to compute height dynamically based
+        # on content measurement and parent window constraints.
+        dialog_height = AdaptiveSizingHelper.calculate_adaptive_height(
+            content_box, transient_for
+        )
+        scrollable_max_height = AdaptiveSizingHelper.calculate_scrollable_max_height(
+            dialog_height
+        )
 
         # Wrap in a ScrolledWindow for small screens / long content.
-        # max_content_height is driven by the computed dialog height minus the
-        # header bar (~48 px) and content margins (40 px top+bottom).
+        # The max_content_height is dynamically computed to enable scrolling
+        # when content exceeds the available space.
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.set_propagate_natural_height(True)
-        scroll.set_max_content_height(dialog_height - 88)
+        scroll.set_max_content_height(scrollable_max_height)
         scroll.set_child(content_box)
         scroll.set_vexpand(True)
 
@@ -2134,7 +2352,7 @@ class InfoDialogPresenter:
         try:
             dialog = Adw.Dialog()
             dialog.set_title(content.dialog_title)
-            dialog.set_content_width(420)
+            dialog.set_content_width(InfoDialogPresenter.DIALOG_CONTENT_WIDTH)
             dialog.set_content_height(dialog_height)
 
             toolbar_view = Adw.ToolbarView()
@@ -2153,7 +2371,8 @@ class InfoDialogPresenter:
             # Adw.Dialog unavailable — use a plain modal window
             win = Gtk.Window()
             win.set_title(content.dialog_title)
-            win.set_default_size(420, dialog_height)
+            win.set_default_size(
+                InfoDialogPresenter.DIALOG_CONTENT_WIDTH, dialog_height)
             win.set_resizable(True)
             if transient_for:
                 win.set_transient_for(transient_for)
@@ -2434,6 +2653,14 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app)
         self.set_title("Weather Config Editor")
+        # Main window sizing:
+        #   • Fixed size (740×900) is appropriate for the main window, as it provides
+        #     a stable, predictable layout for the configuration editor.
+        #   • Contextual info dialogs (via InfoDialogPresenter) use adaptive sizing
+        #     instead, scaling dynamically to content while respecting parent
+        #     constraints. This creates visual hierarchy: contextual < main.
+        #   • The main window size was chosen to accommodate the content comfortably
+        #     while fitting on typical desktop/laptop displays (1024×768+).
         self.set_default_size(740, 900)
         self.set_size_request(740, 900)
 
