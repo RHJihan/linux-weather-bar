@@ -1780,6 +1780,19 @@ build_weather_line() {
 		line=$(sed "s|    ${rain_warning}|    ${shortened_rain_warning}|" <<<"$line")
 	fi
 
+	# If line still exceeds 100 characters and moon_phase is present, strip its description
+	# leaving only the moon phase emoji (e.g. "🌕  Waxing Gibbous" → "🌕")
+	# (but not when outputting JSON, as the full info is needed)
+	if (( ${#line} > 100 )) && [[ -n "$moon_phase" ]] && [[ "${EMIT_JSON_OUTPUT:-false}" != "true" ]]; then
+		# moon_phase format: "<emoji>  <description...>"  (two spaces after emoji)
+		# Extract just the leading emoji (everything before the first two-space gap)
+		local moon_phase_emoji
+		moon_phase_emoji=$(sed -E "s/^([^ ]+)  .*$/\1/" <<<"$moon_phase")
+
+		# Replace the full moon_phase segment in the line with the emoji-only version
+		line=$(sed "s|    ${moon_phase}|    ${moon_phase_emoji}|" <<<"$line")
+	fi
+
 	echo "$line"
 }
 
