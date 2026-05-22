@@ -1767,6 +1767,18 @@ build_weather_line() {
 		fi
 	fi
 
+	# If final line exceeds 100 characters, shorten rain_warning to show only emoji and time/probability
+	if (( ${#line} > 100 )) && [[ -n "$rain_warning" ]]; then
+		# Extract emoji from rain_warning and keep only time/probability info
+		# Format: 🌧️  Rain likely ≈ 12:00 PM (80%)
+		# Result: 🌧️  ≈ 12:00 PM (80%)
+		local shortened_rain_warning
+		shortened_rain_warning=$(sed -E "s/^([^ ]*)  .*≈(.*)$/\1  ≈\2/" <<<"$rain_warning")
+		
+		# Rebuild the line with shortened rain_warning
+		line=$(sed "s|    ${rain_warning}|    ${shortened_rain_warning}|" <<<"$line")
+	fi
+
 	echo "$line"
 }
 
