@@ -1768,7 +1768,8 @@ build_weather_line() {
 	fi
 
 	# If final line exceeds 100 characters, shorten rain_warning to show only emoji and time/probability
-	if (( ${#line} > 100 )) && [[ -n "$rain_warning" ]]; then
+	# (but not when outputting JSON, as the full info is needed)
+	if (( ${#line} > 100 )) && [[ -n "$rain_warning" ]] && [[ "${EMIT_JSON_OUTPUT:-false}" != "true" ]]; then
 		# Extract emoji from rain_warning and keep only time/probability info
 		# Format: 🌧️  Rain likely ≈ 12:00 PM (80%)
 		# Result: 🌧️  ≈ 12:00 PM (80%)
