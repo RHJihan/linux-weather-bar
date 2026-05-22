@@ -4016,17 +4016,26 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
     @staticmethod
     def _format_weather_output(raw: str) -> str:
         """
-        Split a flat weather-bar output string into one segment per line,
-        where each segment begins with an emoji.
+        Extract the weather line from the script output, then split it into
+        one segment per line, where each segment begins with an emoji.
 
+        Extraction: removes everything after ---END-WEATHER-LINE--- marker.
+        
         Input:
-            "🌫️  Haze  26°C    ☔️  Heavy Intensity Rain ≈ 7:00 PM (100%)    🌔  Waxing Gibbous"
+            "🌫️  Haze  26°C    ☔️  Heavy Intensity Rain ≈ 7:00 PM (100%)    🌔  Waxing Gibbous\n---END-WEATHER-LINE---\n{...JSON...}"
         Output:
             "🌫️  Haze  26°C\n☔️  Heavy Intensity Rain ≈ 7:00 PM (100%)\n🌔  Waxing Gibbous"
 
         Lines that do not start with a known emoji are left in place (e.g.
         error strings like "(script not found)") and returned unchanged.
         """
+        # ── Extract weather line (everything before ---END-WEATHER-LINE---) ──
+        if "---END-WEATHER-LINE---" in raw:
+            weather_line = raw.split("---END-WEATHER-LINE---")[0].strip()
+        else:
+            weather_line = raw
+        
+        # ── Split into segments and format ────────────────────────────────
         # All emojis that may appear at the start of a weather-bar segment.
         # Covers every icon in WEATHER_ICONS plus all 8 MOON_PHASE_EMOJIS.
         pattern = re.compile(
@@ -4037,15 +4046,15 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
             r'|[☀⛅☁🌧🌦⛈❄🌫🌕☔]'
             r')'
         )
-        segments = pattern.split(raw)
+        segments = pattern.split(weather_line)
         lines = [seg.strip() for seg in segments if seg.strip()]
-        # If splitting produced nothing useful, return raw unchanged
-        joined = "\n".join(lines) if lines else raw
+        # If splitting produced nothing useful, return weather_line unchanged
+        joined = "\n".join(lines) if lines else weather_line
         # Wrap in span with line_height attribute
         return f'<span line_height="1.5">{joined}</span>'
 
     def _run_weather_script_for_output(self) -> str:
-        """Run the .sh script found next to this file, return its stdout or an error message."""
+        """Run the .sh script found next to this file, return its raw stdout or an error message."""
         script = self._find_weather_script()
 
         if not script:
@@ -4053,6 +4062,7 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
 
         try:
             env = os.environ.copy()
+            env["EMIT_JSON_OUTPUT"] = "true"
 
             result = subprocess.run(
                 ["bash", script],
