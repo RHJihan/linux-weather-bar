@@ -1767,30 +1767,37 @@ build_weather_line() {
 		fi
 	fi
 
+	# Use wc -m for accurate Unicode character count (${#line} overcounts emoji)
+	local line_len
+	line_len=$(printf '%s' "$line" | wc -m)
+
 	# If final line exceeds 100 characters, shorten rain_warning to show only emoji and time/probability
 	# (but not when outputting JSON, as the full info is needed)
-	if (( ${#line} > 100 )) && [[ -n "$rain_warning" ]] && [[ "${EMIT_JSON_OUTPUT:-false}" != "true" ]]; then
+
+	if (( line_len >= 100 )) && [[ -n "$rain_warning" ]] && [[ "${EMIT_JSON_OUTPUT:-false}" != "true" ]]; then
 		# Extract emoji from rain_warning and keep only time/probability info
 		# Format: 🌧️  Rain likely ≈ 12:00 PM (80%)
 		# Result: 🌧️  ≈ 12:00 PM (80%)
 		local shortened_rain_warning
 		shortened_rain_warning=$(sed -E "s/^([^ ]*)  .*≈(.*)$/\1  ≈\2/" <<<"$rain_warning")
-		
+
 		# Rebuild the line with shortened rain_warning
-		line=$(sed "s|    ${rain_warning}|    ${shortened_rain_warning}|" <<<"$line")
+		line="${line//"    ${rain_warning}"/"    ${shortened_rain_warning}"}"
+		line_len=$(printf '%s' "$line" | wc -m)
 	fi
 
 	# If line still exceeds 100 characters and moon_phase is present, strip its description
 	# leaving only the moon phase emoji (e.g. "🌕  Waxing Gibbous" → "🌕")
 	# (but not when outputting JSON, as the full info is needed)
-	if (( ${#line} > 100 )) && [[ -n "$moon_phase" ]] && [[ "${EMIT_JSON_OUTPUT:-false}" != "true" ]]; then
+
+	if (( line_len >= 100 )) && [[ -n "$moon_phase" ]] && [[ "${EMIT_JSON_OUTPUT:-false}" != "true" ]]; then
 		# moon_phase format: "<emoji>  <description...>"  (two spaces after emoji)
 		# Extract just the leading emoji (everything before the first two-space gap)
 		local moon_phase_emoji
 		moon_phase_emoji=$(sed -E "s/^([^ ]+)  .*$/\1/" <<<"$moon_phase")
 
 		# Replace the full moon_phase segment in the line with the emoji-only version
-		line=$(sed "s|    ${moon_phase}|    ${moon_phase_emoji}|" <<<"$line")
+		line="${line//"    ${moon_phase}"/"    ${moon_phase_emoji}"}"
 	fi
 
 	echo "$line"
