@@ -3526,8 +3526,8 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         # Active lunar window: the cached date's moon hasn't set yet
         if window_end > 0 and window_end > now:
             if cached_date != today:
-                return cached_date, f"yesterday ({cached_date}) — active lunar window"
-            return cached_date, "today (active lunar window)"
+                return cached_date, f"yesterday ({cached_date})"
+            return cached_date, "today"
 
         return today, "today"
 
