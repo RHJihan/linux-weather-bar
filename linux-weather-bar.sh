@@ -1770,11 +1770,12 @@ build_weather_line() {
 	# Use wc -m for accurate Unicode character count (${#line} overcounts emoji)
 	local line_len
 	line_len=$(printf '%s' "$line" | wc -m)
+	local MAX_LINE_LEN=90
 
-	# If final line exceeds 100 characters, shorten rain_warning to show only emoji and time/probability
+	# If final line exceeds MAX_LINE_LEN characters, shorten rain_warning to show only emoji and time/probability
 	# (but not when outputting JSON, as the full info is needed)
 
-	if (( line_len >= 100 )) && [[ -n "$rain_warning" ]] && [[ "${EMIT_JSON_OUTPUT:-false}" != "true" ]]; then
+	if (( line_len >= MAX_LINE_LEN )) && [[ -n "$rain_warning" ]] && [[ "${EMIT_JSON_OUTPUT:-false}" != "true" ]]; then
 		# Extract emoji from rain_warning and keep only time/probability info
 		# Format: 🌧️  Rain likely ≈ 12:00 PM (80%)
 		# Result: 🌧️  ≈ 12:00 PM (80%)
@@ -1786,11 +1787,11 @@ build_weather_line() {
 		line_len=$(printf '%s' "$line" | wc -m)
 	fi
 
-	# If line still exceeds 100 characters and moon_phase is present, strip its description
+	# If line still exceeds MAX_LINE_LEN characters and moon_phase is present, strip its description
 	# leaving only the moon phase emoji (e.g. "🌕  Waxing Gibbous" → "🌕")
 	# (but not when outputting JSON, as the full info is needed)
 
-	if (( line_len >= 100 )) && [[ -n "$moon_phase" ]] && [[ "${EMIT_JSON_OUTPUT:-false}" != "true" ]]; then
+	if (( line_len >= MAX_LINE_LEN )) && [[ -n "$moon_phase" ]] && [[ "${EMIT_JSON_OUTPUT:-false}" != "true" ]]; then
 		# moon_phase format: "<emoji>  <description...>"  (two spaces after emoji)
 		# Extract just the leading emoji (everything before the first two-space gap)
 		local moon_phase_emoji
