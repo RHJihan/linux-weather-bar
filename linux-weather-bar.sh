@@ -22,6 +22,8 @@ readonly SUN_DATA_FILE="${HOME}/.cache/weather/sun-data.json"
 readonly MOON_API_URL="https://astroapi.byhrast.com/moon.php"
 # Path to moon data cache file
 readonly MOON_DATA_FILE="${HOME}/.cache/weather/moon-data.json"
+# Path to full moon dates cache (used for Blue Moon detection)
+readonly FULL_MOON_CACHE_FILE="${HOME}/.cache/weather/full_moon.json"
 # Path to weather and forecast API response cache files
 readonly WEATHER_DATA_FILE="${HOME}/.cache/weather/weather-data.json"
 readonly FORECAST_DATA_FILE="${HOME}/.cache/weather/forecast-data.json"
@@ -99,6 +101,7 @@ load_or_create_config
 : "${SHOW_APSIDAL_MOON_EVENTS:=true}"
 : "${SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS:=false}"
 : "${SHOW_FULL_MOON_FOLK_NAME:=true}"
+: "${SHOW_BLUE_MOON_LABEL:=true}"
 
 # ─── Validate Required Credentials ────────────────────────────────────────────
 if [[ -z "${MOON_API_KEY:-}" ]] && [[ "${MOON_PHASE_ENABLED}" == "true" ]]; then
@@ -963,14 +966,18 @@ resolve_phase_index() {
 #   SHOW_MOONPHASE_BILINGUAL - true → English + Bengali (overrides BENGALI)
 #   MOON_PHASE_EMOJIS, MOON_PHASE_NAMES, MOON_PHASE_NAMES_BN
 #   SHOW_FULL_MOON_FOLK_NAME - true → replace "Full Moon" with folk name
+#   SHOW_BLUE_MOON_LABEL     - true → append "(Blue Moon)" after all other labels
 # Arguments:
 #   $1 - Phase index (0-7)
 #   $2 - Apsidal syzygy label (optional, e.g. "Supermoon", "Micromoon")
 #        When provided and non-empty, appended as "(label)" after the phase name.
 #        In bilingual mode it is always appended in English after the Bengali name.
-#   $3 - Moonrise epoch (optional, 0 if unknown; used for folk name lookup)
+#   $3 - Moon data JSON string (optional; used for folk name and Blue Moon lookup)
 # Outputs:
-#   English:    "🌕  Flower Moon"          or  "🌕  Flower Moon (Supermoon)"
+#   English:    "🌕  Flower Moon"                        (base)
+#               "🌕  Flower Moon (Supermoon)"            (with syzygy)
+#               "🌕  Flower Moon (Blue Moon)"            (with blue moon)
+#               "🌕  Flower Moon (Micromoon, Blue Moon)" (syzygy + blue moon)
 #   Bengali:    "🌕  পূর্ণিমা"           or  "🌕  পূর্ণিমা (Supermoon)"
 #   Bilingual:  "🌕  Flower Moon (পূর্ণিমা)" or  "🌕  Flower Moon (পূর্ণিমা) (Supermoon)"
 # Returns:
@@ -996,6 +1003,36 @@ get_moon_phase() {
 		base="${MOON_PHASE_EMOJIS[$phase_index]}  ${english_label}"
 	fi
 
+	# ── Append Blue Moon suffix last, after all other labels ───────────────────
+	# Ensures correct order: "Flower Moon (Micromoon, Blue Moon)" not the reverse.
+	# Registration and detection are scoped to Full Moon phases only.
+	if [[ "$SHOW_BLUE_MOON_LABEL" == "true" ]] && (( phase_index == 4 )); then
+		# Derive ISO date (YYYY-MM-DD) from the API date field (DD/MM/YYYY)
+		local api_date iso_date=""
+		api_date=$(jq -r '.date // ""' <<<"$moon_data" 2>/dev/null)
+		if [[ "$api_date" =~ ^([0-9]{2})/([0-9]{2})/([0-9]{4})$ ]]; then
+			iso_date="${BASH_REMATCH[3]}-${BASH_REMATCH[2]}-${BASH_REMATCH[1]}"
+		fi
+
+		if [[ -n "$iso_date" ]]; then
+			# Register this Full Moon date so the monthly cache stays current
+			_register_full_moon_date "$iso_date"
+
+			# Append suffix when this is the second Full Moon of the month.
+			# Comma-join with syzygy inside one set of parens to produce:
+			#   "Flower Moon (Micromoon, Blue Moon)" not "Flower Moon (Micromoon) (Blue Moon)"
+			if _is_blue_moon_date "$iso_date"; then
+				if [[ -n "$syzygy_label" ]]; then
+					echo "${base} (${syzygy_label}, Blue Moon)"
+				else
+					echo "${base} (Blue Moon)"
+				fi
+				return 0
+			fi
+		fi
+	fi
+
+	# No Blue Moon — append syzygy standalone if present
 	if [[ -n "$syzygy_label" ]]; then
 		echo "${base} (${syzygy_label})"
 	else
@@ -1147,6 +1184,250 @@ declare -A FULL_MOON_FOLK_NAMES=(
 )
 
 #######################################
+# Load the full moon cache for the current calendar month, rebuilding it
+# when absent, corrupt, or stale (cached month ≠ current month).
+#
+# Cache schema (full_moon.json):
+#   {
+#     "month": "YYYY-MM",          ← ISO year-month, e.g. "2026-05"
+#     "full_moon_dates": ["2026-05-12", "2026-05-31"]
+#   }
+#
+# Full Moon dates are sourced from the moon-data.json cache: a date is
+# included when its .phase field equals "Full Moon".  The approach keeps
+# Blue Moon detection entirely within the existing caching infrastructure
+# and avoids any new external API calls.
+#
+# Because the moon-data.json cache covers only one day at a time, the
+# full_moon.json is seeded from whatever date is currently cached.  Dates
+# from prior runs accumulate in the array; the cache is cleared and
+# restarted whenever the stored month differs from the current month.
+#
+# Globals:
+#   FULL_MOON_CACHE_FILE
+#   MOON_DATA_FILE
+# Arguments:
+#   (none)
+# Outputs:
+#   JSON string (the loaded or freshly built cache)
+# Returns:
+#   0 always
+#######################################
+_load_full_moon_cache() {
+    local current_month
+    current_month=$(date +"%Y-%m")
+
+    mkdir -p "$(dirname "$FULL_MOON_CACHE_FILE")"
+
+    # ── Attempt to use an existing, valid cache ────────────────────────────────
+    if [[ -f "$FULL_MOON_CACHE_FILE" ]]; then
+        local cached
+        cached=$(cat "$FULL_MOON_CACHE_FILE" 2>/dev/null) || cached=""
+
+        if [[ -n "$cached" ]]; then
+            local cached_month
+            cached_month=$(jq -r '.month // ""' <<<"$cached" 2>/dev/null) || cached_month=""
+
+            if [[ "$cached_month" == "$current_month" ]]; then
+                # Still the same month — validate structure then return as-is
+                if jq -e '(.month | type) == "string" and (.full_moon_dates | type) == "array"' \
+                        <<<"$cached" >/dev/null 2>&1; then
+                    echo "$cached"
+                    return 0
+                fi
+                # Structurally corrupt — fall through to rebuild
+            fi
+            # Month has changed (or parse failed) — fall through to rebuild
+        fi
+    fi
+
+    # ── Build a fresh cache for the current month ──────────────────────────────
+    # Seed from the daily moon-data.json: if it records a Full Moon whose date
+    # falls in the current month, include that date; otherwise start empty.
+    local initial_dates="[]"
+
+    if [[ -f "$MOON_DATA_FILE" ]]; then
+        local moon_json
+        moon_json=$(cat "$MOON_DATA_FILE" 2>/dev/null) || moon_json=""
+
+        if [[ -n "$moon_json" ]]; then
+            local phase api_date
+            phase=$(jq -r '.phase // ""'  <<<"$moon_json" 2>/dev/null) || phase=""
+            api_date=$(jq -r '.date  // ""' <<<"$moon_json" 2>/dev/null) || api_date=""
+
+            # Convert DD/MM/YYYY → YYYY-MM-DD for comparison and storage
+            if [[ "$phase" == "Full Moon" ]] && \
+               [[ "$api_date" =~ ^([0-9]{2})/([0-9]{2})/([0-9]{4})$ ]]; then
+                local iso_date="${BASH_REMATCH[3]}-${BASH_REMATCH[2]}-${BASH_REMATCH[1]}"
+                local date_month="${iso_date:0:7}"   # "YYYY-MM"
+                if [[ "$date_month" == "$current_month" ]]; then
+                    initial_dates=$(jq -n --arg d "$iso_date" '[$d]')
+                fi
+            fi
+        fi
+    fi
+
+    local fresh_cache
+    fresh_cache=$(jq -n \
+        --arg  month "$current_month" \
+        --argjson dates "$initial_dates" \
+        '{month: $month, full_moon_dates: $dates}')
+
+    if [[ "${DISABLE_CACHE_WRITE:-false}" != "true" ]]; then
+        printf '%s\n' "$fresh_cache" > "$FULL_MOON_CACHE_FILE"
+    fi
+
+    echo "$fresh_cache"
+}
+
+#######################################
+# Register a Full Moon date in the monthly full moon cache.
+#
+# Adds the given ISO date (YYYY-MM-DD) to .full_moon_dates when:
+#   - it belongs to the current calendar month, AND
+#   - it is not already present in the array.
+#
+# Calls _load_full_moon_cache to ensure the cache is valid and current
+# before merging.  The updated cache is written back to FULL_MOON_CACHE_FILE.
+#
+# Globals:
+#   FULL_MOON_CACHE_FILE
+#   DISABLE_CACHE_WRITE
+# Arguments:
+#   $1 - iso_date  Full Moon date in YYYY-MM-DD format
+# Returns:
+#   0 always
+#######################################
+_register_full_moon_date() {
+    local iso_date="$1"
+    [[ -n "$iso_date" ]] || return 0
+
+    local current_month date_month
+    current_month=$(date +"%Y-%m")
+    date_month="${iso_date:0:7}"
+
+    # Only register dates that belong to the current month
+    [[ "$date_month" == "$current_month" ]] || return 0
+
+    local cache
+    cache=$(_load_full_moon_cache)
+
+    # Merge: add iso_date only if not already present
+    local updated
+    updated=$(jq \
+        --arg d "$iso_date" \
+        'if (.full_moon_dates | index($d)) == null
+         then .full_moon_dates += [$d]
+         else .
+         end' <<<"$cache")
+
+    if [[ "${DISABLE_CACHE_WRITE:-false}" != "true" ]]; then
+        printf '%s\n' "$updated" > "$FULL_MOON_CACHE_FILE"
+    fi
+}
+
+#######################################
+# Determine whether a given Full Moon date is a Blue Moon.
+#
+# Uses the modern astronomical Blue Moon definition:
+#   The second DISTINCT full-moon event occurring within the same calendar month.
+#
+# A single full-moon event may appear across two consecutive calendar dates
+# because the precise moment of full moon can fall near midnight and still
+# look full on the following day.  Two cached dates are therefore considered
+# the SAME event when they differ by exactly one day (consecutive).  Only
+# non-consecutive dates are treated as separate astronomical events.
+#
+# Algorithm (pure jq, no external dependencies):
+#   1. Sort the cached full_moon_dates array chronologically.
+#   2. Walk the sorted list and group consecutive dates into "events":
+#      a new event starts only when the gap to the previous date exceeds
+#      one day.  Each event is represented by its EARLIEST date.
+#   3. A date is a Blue Moon when:
+#      - It is present in the sorted dates array (sanity check), AND
+#      - The event it belongs to is NOT the first event (event index ≥ 1).
+#
+# This correctly handles the edge case described in the project specification:
+# if the full moon occurs on 4 June and the API also reports "Full Moon" for
+# 5 June, both dates collapse into one event (event index 0) and neither is
+# labelled a Blue Moon.
+#
+# Globals:
+#   FULL_MOON_CACHE_FILE
+# Arguments:
+#   $1 - iso_date  Date to test in YYYY-MM-DD format (YYYY-MM-DD)
+# Returns:
+#   0 (true)  if iso_date belongs to the second (or later) distinct
+#             full-moon event this month
+#   1 (false) otherwise
+#######################################
+_is_blue_moon_date() {
+    local iso_date="$1"
+    [[ -n "$iso_date" ]] || return 1
+
+    local cache
+    cache=$(_load_full_moon_cache)
+
+    # Group consecutive dates into distinct astronomical events, then
+    # determine which event iso_date belongs to.  A Blue Moon is any
+    # date whose event index is ≥ 1 (i.e. not the first event).
+    jq -e \
+        --arg d "$iso_date" \
+        '
+        # ── Step 1: sort dates chronologically ────────────────────────────
+        (.full_moon_dates | sort) as $sorted
+
+        # Quick exit: date not in cache at all
+        | if ($sorted | index($d)) == null then false
+          else
+
+            # ── Step 2: group consecutive dates into events ────────────────
+            # "Consecutive" means the gap between two ISO dates is exactly
+            # 1 day.  We compare by converting YYYY-MM-DD to a day-count
+            # using the formula: days = Y*365 + M*30 + D (approximate but
+            # sufficient for a gap==1 test within a single calendar month).
+            (
+                $sorted | reduce .[] as $date (
+                    { events: [], prev_days: -99 };
+                    # Convert YYYY-MM-DD to an integer day-count
+                    ($date | split("-") |
+                        (.[0] | tonumber) * 365 +
+                        (.[1] | tonumber) * 30  +
+                        (.[2] | tonumber)
+                    ) as $days
+                    |
+                    if ($days - .prev_days) <= 1
+                    then
+                        # Consecutive → same event as the last one; skip
+                        .prev_days = $days
+                    else
+                        # Non-consecutive → new distinct event
+                        .events += [$date] | .prev_days = $days
+                    end
+                ) | .events
+            ) as $event_starts
+
+            # ── Step 3: find which event iso_date belongs to ───────────────
+            # iso_date is in event N when it falls on or after event_starts[N]
+            # and before event_starts[N+1] (or is the last event).
+            | ($event_starts | length) as $num_events
+            | if $num_events < 2 then false
+              else
+                # Determine the event index for $d:
+                # it belongs to the last event whose start <= $d.
+                (
+                    [ range($num_events)
+                      | select($event_starts[.] <= $d)
+                    ] | max
+                ) as $event_idx
+                | $event_idx >= 1
+              end
+          end
+        ' \
+        <<<"$cache" >/dev/null 2>&1
+}
+
+#######################################
 # Resolve the appropriate Full Moon label: either a traditional folk name
 # or the generic "Full Moon" label.
 #
@@ -1156,6 +1437,28 @@ declare -A FULL_MOON_FOLK_NAMES=(
 # Month is extracted solely from the .date field (DD/MM/YYYY) in moon_data —
 # the canonical API date, always present regardless of moonrise/moonset values.
 #
+# Arguments:
+#   $1 - Phase name (e.g., "Full Moon", "New Moon", "Waxing Gibbous")
+#   $2 - Moon data JSON string
+# Outputs:
+#   "Full Moon" (default)
+#   Traditional folk name (e.g., "Flower Moon") if SHOW_FULL_MOON_FOLK_NAME is true
+# Returns:
+#   0 always
+#######################################
+#######################################
+# Resolve the appropriate Full Moon label: either a traditional folk name
+# or the generic "Full Moon" label.
+#
+# This function is INDEPENDENT of apsidal events, SHOW_APSIDAL_MOON_EVENTS,
+# and SHOW_BLUE_MOON_LABEL.  It returns only the base name label; Blue Moon
+# suffix composition is handled by the caller (get_moon_phase).
+#
+# Month is extracted solely from the .date field (DD/MM/YYYY) in moon_data —
+# the canonical API date, always present regardless of moonrise/moonset values.
+#
+# Globals:
+#   SHOW_FULL_MOON_FOLK_NAME
 # Arguments:
 #   $1 - Phase name (e.g., "Full Moon", "New Moon", "Waxing Gibbous")
 #   $2 - Moon data JSON string

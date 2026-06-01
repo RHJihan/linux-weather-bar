@@ -126,3 +126,6 @@ readonly SHOW_APSIDAL_MOON_EVENTS=true
 
 # Suppress supermoon/micromoon label when the moon isn't visible at night
 readonly SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS=false
+
+# Show "(Blue Moon)" label when a second Full Moon occurs in the same calendar month
+readonly SHOW_BLUE_MOON_LABEL=true

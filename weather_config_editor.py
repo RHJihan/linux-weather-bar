@@ -219,6 +219,7 @@ DEPENDENCIES: dict[str, list[str]] = {
         "SHOW_MOONPHASE_BILINGUAL",
         "SHOW_APSIDAL_MOON_EVENTS",
         "SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS",
+        "SHOW_BLUE_MOON_LABEL",
     ],
     "SHOW_APSIDAL_MOON_EVENTS": [
         "SUPPRESS_NOT_VISIBLE_NIGHT_APSIDAL_MOON_EVENTS",
@@ -345,16 +346,20 @@ SCHEMA: list[VarSchema] = [
               "Display even when rain is in the forecast", readonly=True,
               group="Moon Phase"),
 
-    VarSchema("SHOW_FULL_MOON_FOLK_NAME",             "Show Full Moon Traditional Name",          VarType.BOOLEAN,
-              "Display the traditional or cultural name of the Full Moon (e.g., Snow Moon, Pink Moon)",
-              readonly=True, group="Moon Phase"),
-
     VarSchema("SHOW_MOONPHASE_BILINGUAL",           "Bilingual Phase Name",        VarType.BOOLEAN,
               "Show phase name in both English and Bengali", readonly=True,
               group="Moon Phase"),
 
     VarSchema("SHOW_MOONPHASE_BENGALI",             "Bengali Phase Name",          VarType.BOOLEAN,
               "Show phase name in Bengali only", readonly=True, group="Moon Phase"),
+
+    VarSchema("SHOW_BLUE_MOON_LABEL",             "Show Blue Moon Label",          VarType.BOOLEAN,
+              "Show Blue Moon label when a second Full Moon occurs in the same calendar month",
+              readonly=True, group="Moon Phase"),
+
+    VarSchema("SHOW_FULL_MOON_FOLK_NAME",             "Show Full Moon Traditional Name",          VarType.BOOLEAN,
+              "Display the traditional or cultural name of the Full Moon (e.g., Snow Moon, Pink Moon)",
+              readonly=True, group="Moon Phase"),
 
     VarSchema("SHOW_APSIDAL_MOON_EVENTS",             "Apsidal Moon Events",          VarType.BOOLEAN,
               "Show supermoon, super new moon, or micromoon label when applicable",
