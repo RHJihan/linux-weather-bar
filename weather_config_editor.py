@@ -2659,15 +2659,22 @@ class WeatherConfigWindow(Adw.ApplicationWindow):
         super().__init__(application=app)
         self.set_title("Weather Config Editor")
         # Main window sizing:
-        #   • Fixed size (740×900) is appropriate for the main window, as it provides
-        #     a stable, predictable layout for the configuration editor.
-        #   • Contextual info dialogs (via InfoDialogPresenter) use adaptive sizing
-        #     instead, scaling dynamically to content while respecting parent
-        #     constraints. This creates visual hierarchy: contextual < main.
-        #   • The main window size was chosen to accommodate the content comfortably
-        #     while fitting on typical desktop/laptop displays (1024×768+).
+        #   • set_default_size() is only an *initial/preferred* size hint — GTK
+        #     is free to shrink the window below it, so it's safe to keep at
+        #     740×900 for a comfortable default on typical desktop/laptop
+        #     displays (1024×768+).
+        #   • set_size_request() instead sets a *hard minimum* the window can
+        #     never shrink below. Setting it to 740×900 previously forced the
+        #     window to stay that large even on small screens (e.g. 1366×768
+        #     laptops with panels/docks, tiling window managers, or narrow
+        #     GNOME layouts), so the window could not fit and got clipped.
+        #   • Per GNOME HIG / libadwaita convention, top-level windows should
+        #     only request a small minimum (the main content already scrolls
+        #     via the ScrolledWindow set up below), so we cap the hard
+        #     minimum at 360×200 — small enough to fit any standard display —
+        #     and let the ScrolledWindow handle any content overflow.
         self.set_default_size(740, 900)
-        self.set_size_request(740, 900)
+        self.set_size_request(360, 200)
 
         self._parser = ConfigParser()
         self._validator = Validator()
